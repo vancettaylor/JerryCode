@@ -161,8 +161,62 @@ max_connections=100" > config.txt' \
     'g++ -std=c++17 -o test main.cpp && output=$(./test) && echo "$output" | grep -q "localhost" && echo "$output" | grep -q "8080" && echo "$output" | grep -q "true\|1"' \
     120
 
+# ─── ADVANCED LEVELS ─────────────────────────────────────────────
+
+# Level 11: Multi-file with cross-references
+run_level "Cross-file deps" \
+    '' \
+    'Create a C++ project: 1) token.hpp with an enum TokenType (Number, Plus, Minus, Mul, Div, LParen, RParen, End) and a Token struct (type, value as string). 2) lexer.hpp with a Lexer class that takes a string and produces a vector<Token>. 3) main.cpp that lexes "3 + 4 * 2" and prints each token. Compile with g++ -std=c++17 -o test main.cpp and run.' \
+    'g++ -std=c++17 -o test main.cpp && output=$(./test) && echo "$output" | grep -qi "number\|3\|plus\|+"' \
+    180
+
+# Level 12: Test-driven fix
+run_level "Fix from test output" \
+    'echo "#include <iostream>
+#include <string>
+#include <algorithm>
+
+std::string caesar_encrypt(const std::string& text, int shift) {
+    std::string result = text;
+    for (auto& c : result) {
+        if (c >= \"a\" && c <= \"z\") c = (c - \"a\" + shift) % 26 + \"a\";
+        if (c >= \"A\" && c <= \"Z\") c = (c - \"A\" + shift) % 26 + \"A\";
+    }
+    return result;
+}
+
+int main() {
+    std::cout << caesar_encrypt(\"Hello World\", 3) << std::endl;
+    std::cout << caesar_encrypt(\"Khoor Zruog\", -3) << std::endl;
+    return 0;
+}" > main.cpp' \
+    "The caesar cipher in main.cpp has bugs - it uses string comparison instead of char comparison with single quotes. Fix ALL the bugs. The output should be Khoor Zruog then Hello World. Compile with g++ -std=c++17 -o test main.cpp and run." \
+    'g++ -std=c++17 -o test main.cpp 2>&1 && output=$(./test) && echo "$output" | head -1 | grep -q "Khoor Zruog"' \
+    120
+
+# Level 13: Complete system from scratch
+run_level "Matrix class" \
+    '' \
+    'Create matrix.hpp: a header-only Matrix class template that supports: construction from rows/cols with default value, at(r,c) access, rows()/cols() getters, operator+ (matrix add), operator* (matrix multiply), transpose(), and a print() method. Create main.cpp that creates a 2x3 and 3x2 matrix, multiplies them to get 2x2, and prints the result. Compile with g++ -std=c++17 -o test main.cpp and run.' \
+    'g++ -std=c++17 -o test main.cpp && ./test | grep -q "[0-9]"' \
+    180
+
+# Level 14: Makefile project with testing
+run_level "Project with tests" \
+    '' \
+    'Create a C++ project: 1) string_utils.hpp with functions trim, split, join, to_lower, to_upper, replace_all. 2) main.cpp with a test runner that tests each function and prints PASS/FAIL for each test. 3) Compile with g++ -std=c++17 -o test main.cpp and run. All tests should pass.' \
+    'g++ -std=c++17 -o test main.cpp && output=$(./test) && echo "$output" | grep -q "PASS" && ! echo "$output" | grep -q "FAIL"' \
+    180
+
+# Level 15: Full application
+run_level "Contact book app" \
+    '' \
+    'Create a command-line contact book: 1) contact.hpp with Contact struct (name, phone, email) and ContactBook class (add, remove, find_by_name, list_all, save_to_file, load_from_file). Save as CSV. 2) main.cpp with CLI: ./contacts add "John" "555-1234" "john@test.com", ./contacts list, ./contacts find "John", ./contacts remove "John". Compile with g++ -std=c++17 -o contacts main.cpp and test add+list.' \
+    'g++ -std=c++17 -o contacts main.cpp && ./contacts add "Alice" "555-1111" "alice@test.com" && ./contacts add "Bob" "555-2222" "bob@test.com" && output=$(./contacts list) && echo "$output" | grep -q "Alice" && echo "$output" | grep -q "Bob"' \
+    180
+
 echo ""
 echo "╔═══════════════════════════════════════╗"
-echo "║  Results: ${PASS} pass, ${FAIL} fail / $((PASS+FAIL)) total ║"
+echo "║  Results: ${PASS} pass, ${FAIL} fail / $((PASS+FAIL)) total  ║"
 echo "╚═══════════════════════════════════════╝"
 exit $FAIL
