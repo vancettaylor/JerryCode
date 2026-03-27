@@ -440,16 +440,21 @@ bool Session::execute_task(Task& task, SessionCallbacks& cb) {
     std::transform(desc_lower.begin(), desc_lower.end(), desc_lower.begin(), ::tolower);
     auto combined = title_lower + " " + desc_lower;
 
-    // Extract file path FIRST — this determines action type
+    // Extract target file — prefer title (it names the file to create/modify)
+    // over files_involved (which may list input/dependency files)
     std::string target_file;
-    for (const auto& f : task.files_involved) {
-        target_file = f; break;
+    std::regex file_re(R"((\S+\.(?:cpp|hpp|h|c|py|js|ts|sh|txt|json|md|rs|go|java|rb|css|html))\b)");
+    std::smatch match;
+    if (std::regex_search(task.title, match, file_re)) {
+        target_file = match[1].str();
+    } else if (std::regex_search(task.description, match, file_re)) {
+        target_file = match[1].str();
     }
+    // Fallback to files_involved only if nothing found in title/description
     if (target_file.empty()) {
-        std::regex file_re(R"((\S+\.(?:cpp|hpp|h|c|py|js|ts|sh|txt|json|md|rs|go|java|rb|css|html))\b)");
-        std::smatch match;
-        if (std::regex_search(task.title, match, file_re)) target_file = match[1].str();
-        else if (std::regex_search(task.description, match, file_re)) target_file = match[1].str();
+        for (const auto& f : task.files_involved) {
+            target_file = f; break;
+        }
     }
 
     // Detect action type — write takes priority if a target file is found
