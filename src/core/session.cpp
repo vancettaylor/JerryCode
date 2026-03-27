@@ -6,6 +6,7 @@
 #include <sstream>
 #include <chrono>
 #include <regex>
+#include <thread>
 
 namespace cortex {
 
@@ -102,16 +103,32 @@ std::string Session::llm_call(const std::string& system_prompt,
         messages.push_back(Message::user(user_message));
     }
 
-    stats_.total_llm_calls++;
-    auto completion = provider_->complete(messages, config);
-    stats_.total_tokens_in += completion.usage.input_tokens;
-    stats_.total_tokens_out += completion.usage.output_tokens;
+    // Retry on transient errors (server busy, proxy errors)
+    for (int attempt = 0; attempt < 3; attempt++) {
+        stats_.total_llm_calls++;
+        auto completion = provider_->complete(messages, config);
+        stats_.total_tokens_in += completion.usage.input_tokens;
+        stats_.total_tokens_out += completion.usage.output_tokens;
 
-    std::string text;
-    for (const auto& block : completion.content) {
-        if (block.type == "text") text += block.text;
+        std::string text;
+        for (const auto& block : completion.content) {
+            if (block.type == "text") text += block.text;
+        }
+
+        // Check for server errors
+        if (text.find("API Error") == 0 || text.find("<!DOCTYPE") != std::string::npos ||
+            text.find("Connection failed") == 0 || text.find("Error:") == 0) {
+            log::warn("LLM call failed (attempt " + std::to_string(attempt+1) + "): " + text.substr(0, 80));
+            if (attempt < 2) {
+                log::info("Retrying in 3 seconds...");
+                std::this_thread::sleep_for(std::chrono::seconds(3));
+                continue;
+            }
+        }
+
+        return text;
     }
-    return text;
+    return "";
 }
 
 std::string Session::compile_prompt(const std::string& system_prompt) const {
@@ -270,19 +287,82 @@ void Session::phase_breakdown(const std::string& request) {
     auto system = PromptEngine::task_breakdown(project_ctx.str());
 
     log::info("Phase 1: Breaking down task...");
-    auto response = llm_with_expansion(system, request, 2048, 6);
+
+    // For small projects: pre-read all files and do ONE call (fast)
+    // For large projects: use expansion loop (model explores selectively)
+    std::string response;
+    auto file_count = expander_.stats().total_items;
+
+    // Always do a single call for decomposition.
+    // Pre-load all small files so the model can plan accurately.
+    std::string all_files;
+    int files_loaded = 0;
+    try {
+        for (const auto& entry : fs::recursive_directory_iterator(project_root_,
+                fs::directory_options::skip_permission_denied)) {
+            if (!entry.is_regular_file()) continue;
+            auto rel = fs::relative(entry.path(), project_root_).string();
+            if (rel[0] == '.' || rel.find("build/") == 0 || rel.find(".cortex/") == 0) continue;
+            auto size = fs::file_size(entry.path());
+            if (size > 10000) continue;  // Skip large files
+            auto content = read_file(rel);
+            if (!content.empty()) {
+                all_files += "\n## " + rel + ":\n" + content + "\n";
+                files_loaded++;
+                if (files_loaded >= 20) break;  // Cap at 20 files
+            }
+        }
+    } catch (...) {}
+
+    if (!all_files.empty()) {
+        system += "\n## Current file contents:" + all_files;
+    }
+
+    response = llm_call(system, request, 2048);
+
     log::debug("Breakdown response: " + response.substr(0, 500));
 
-    // Extract JSON array
+    // Extract JSON array — handle multiple response formats
+    std::string json_str;
+
     auto arr_start = response.find('[');
     auto arr_end = response.rfind(']');
-    if (arr_start == std::string::npos || arr_end == std::string::npos) {
-        log::error("No JSON array in breakdown: " + response.substr(0, 200));
-        return;
+    if (arr_start != std::string::npos && arr_end != std::string::npos && arr_end > arr_start) {
+        json_str = response.substr(arr_start, arr_end - arr_start + 1);
+    } else {
+        // Model returned objects without array wrapper — try to salvage
+        auto obj_start = response.find('{');
+        if (obj_start != std::string::npos) {
+            // Try wrapping and parsing progressively shorter substrings
+            auto text = response.substr(obj_start);
+            bool parsed = false;
+            // Find each } and try to parse [text up to }]
+            for (size_t pos = text.size(); pos > 0; pos--) {
+                if (text[pos-1] == '}') {
+                    auto candidate = "[" + text.substr(0, pos) + "]";
+                    try {
+                        auto test = Json::parse(candidate);
+                        if (test.is_array() && !test.empty()) {
+                            json_str = candidate;
+                            parsed = true;
+                            log::info("Salvaged " + std::to_string(test.size()) + " tasks from non-array response");
+                            break;
+                        }
+                    } catch (...) {}
+                }
+            }
+            if (!parsed) {
+                log::error("Could not parse task breakdown from: " + text.substr(0, 200));
+                return;
+            }
+        } else {
+            log::error("No JSON in breakdown: " + response.substr(0, 200));
+            return;
+        }
     }
 
     try {
-        auto json = Json::parse(response.substr(arr_start, arr_end - arr_start + 1));
+        auto json = Json::parse(json_str);
         tasks_.load_from_json(json);
         log::info("Task breakdown: " + std::to_string(tasks_.total_count()) + " tasks");
         for (int i = 1; i <= tasks_.total_count(); i++) {
@@ -360,37 +440,50 @@ bool Session::execute_task(Task& task, SessionCallbacks& cb) {
     std::transform(desc_lower.begin(), desc_lower.end(), desc_lower.begin(), ::tolower);
     auto combined = title_lower + " " + desc_lower;
 
-    // Detect action type
-    bool is_read = combined.find("read ") != std::string::npos ||
-                   combined.find("examine") != std::string::npos ||
-                   combined.find("understand") != std::string::npos;
-    bool is_write = combined.find("create ") != std::string::npos ||
-                    combined.find("write ") != std::string::npos ||
-                    combined.find("add ") != std::string::npos ||
-                    combined.find("modify ") != std::string::npos ||
-                    combined.find("update ") != std::string::npos ||
-                    combined.find("implement") != std::string::npos;
-    bool is_bash = combined.find("compile") != std::string::npos ||
-                   combined.find("run ") != std::string::npos ||
-                   combined.find("test ") != std::string::npos ||
-                   combined.find("execute") != std::string::npos ||
-                   combined.find("verify") != std::string::npos ||
-                   combined.find("check ") != std::string::npos;
-
-    // Extract file path from task
+    // Extract file path FIRST — this determines action type
     std::string target_file;
     for (const auto& f : task.files_involved) {
-        target_file = f;
-        break;
+        target_file = f; break;
     }
-    // Try to extract from title/description
     if (target_file.empty()) {
-        std::regex file_re(R"((\S+\.\w{1,4}))");
+        std::regex file_re(R"((\S+\.(?:cpp|hpp|h|c|py|js|ts|sh|txt|json|md|rs|go|java|rb|css|html))\b)");
         std::smatch match;
-        if (std::regex_search(task.title, match, file_re)) {
-            target_file = match[1].str();
-        } else if (std::regex_search(task.description, match, file_re)) {
-            target_file = match[1].str();
+        if (std::regex_search(task.title, match, file_re)) target_file = match[1].str();
+        else if (std::regex_search(task.description, match, file_re)) target_file = match[1].str();
+    }
+
+    // Detect action type — write takes priority if a target file is found
+    bool has_file = !target_file.empty();
+    bool mentions_create = combined.find("create ") != std::string::npos ||
+                           combined.find("write ") != std::string::npos ||
+                           combined.find("add ") != std::string::npos ||
+                           combined.find("modify ") != std::string::npos ||
+                           combined.find("update ") != std::string::npos ||
+                           combined.find("implement") != std::string::npos ||
+                           combined.find("fix ") != std::string::npos ||
+                           combined.find("refactor") != std::string::npos ||
+                           combined.find("change ") != std::string::npos ||
+                           combined.find("replace ") != std::string::npos;
+    bool mentions_read = combined.find("read ") != std::string::npos ||
+                         combined.find("examine") != std::string::npos ||
+                         combined.find("understand") != std::string::npos;
+    bool mentions_bash = combined.find("compile") != std::string::npos ||
+                         combined.find("run ") != std::string::npos ||
+                         combined.find("execute") != std::string::npos ||
+                         combined.find("make") != std::string::npos;
+
+    // Priority: if task mentions creating/writing a file, it's a write
+    // "test" alone doesn't mean bash — "create main.py to test" is still a write
+    bool is_write = has_file && mentions_create;
+    bool is_read = has_file && mentions_read && !mentions_create;
+    bool is_bash = mentions_bash && !is_write && !is_read;
+
+    // Also classify tasks that are purely about verification/testing as bash
+    if (!is_write && !is_read && !is_bash) {
+        if (combined.find("test ") != std::string::npos ||
+            combined.find("verify") != std::string::npos ||
+            combined.find("check ") != std::string::npos) {
+            is_bash = true;
         }
     }
 
@@ -398,7 +491,7 @@ bool Session::execute_task(Task& task, SessionCallbacks& cb) {
     std::string bash_cmd;
     if (is_bash) {
         // Look for command patterns
-        std::regex cmd_re(R"((g\+\+[^"]*|make\b[^"]*|python3?\s+\S+|\.\/\S+|cmake[^"]*|npm\s+\S+|cargo\s+\S+))");
+        std::regex cmd_re(R"((\bg\+\+\s[^"]*|\bmake\b[^"]*|\bpython3?\s+\S+|\.\/\S+|\bbash\s+\S+\.sh|\bcmake\s[^"]*|\bnpm\s+\S+|\bcargo\s+\S+))");
         std::smatch match;
         if (std::regex_search(task.title, match, cmd_re)) {
             bash_cmd = match[1].str();
@@ -407,16 +500,31 @@ bool Session::execute_task(Task& task, SessionCallbacks& cb) {
         } else if (std::regex_search(original_request_, match, cmd_re)) {
             bash_cmd = match[1].str();
         }
-        // If no command found, construct a reasonable one from context
+        // If no command found, try to construct one
         if (bash_cmd.empty()) {
-            // Look for a compile command in the original request
-            std::regex compile_re(R"((g\+\+\s+[^\n]+|make\b|cmake\s+[^\n]+))");
+            // Look for a compile/run command in the original request
+            std::regex compile_re(R"((\bg\+\+\s+[^\n]+|\bmake\b|\bcmake\s+[^\n]+|\bbash\s+\S+\.sh|\bpython3?\s+\S+))");
             std::smatch req_match;
             if (std::regex_search(original_request_, req_match, compile_re)) {
                 bash_cmd = req_match[1].str();
             }
         }
+        // If we have a .sh file mentioned, run it with bash
+        if (bash_cmd.empty() && !target_file.empty() &&
+            target_file.size() > 3 && target_file.substr(target_file.size()-3) == ".sh") {
+            bash_cmd = "bash " + target_file;
+        }
+        // If we have a compiled binary name, try running it
+        if (bash_cmd.empty() && !target_file.empty() && target_file.find('.') == std::string::npos) {
+            bash_cmd = "./" + target_file;
+        }
     }
+
+    log::debug("Classification: write=" + std::to_string(is_write) +
+               " read=" + std::to_string(is_read) +
+               " bash=" + std::to_string(is_bash) +
+               " file=" + target_file +
+               " cmd=" + bash_cmd);
 
     try {
         if (is_bash && !bash_cmd.empty()) {
@@ -507,8 +615,24 @@ std::string Session::do_write(const std::string& path, const std::string& descri
     auto system = PromptEngine::code_gen(path, description, original_request_);
 
     if (!existing.empty()) {
+        // Detect if this is a bug fix task
+        auto desc_lower = description;
+        std::transform(desc_lower.begin(), desc_lower.end(), desc_lower.begin(), ::tolower);
+        bool is_fix = desc_lower.find("fix") != std::string::npos ||
+                      desc_lower.find("bug") != std::string::npos ||
+                      desc_lower.find("error") != std::string::npos;
+
         system += "\n## Current content:\n" + existing + "\n";
-        system += "\nModify the above. Output the COMPLETE updated file.\n";
+        if (is_fix) {
+            system += "\nIMPORTANT: This is a BUG FIX task. The code above has a bug. ";
+            system += "You MUST find and fix the bug. Do NOT copy the code unchanged. ";
+            system += "If there are comments indicating the bug (like '// BUG:'), apply the fix they describe. ";
+            system += "Output the COMPLETE corrected file.\n";
+        } else {
+            system += "\nYou MUST modify the above file according to the task. ";
+            system += "Apply ALL changes described. Do NOT return the file unchanged. ";
+            system += "Output the COMPLETE updated file.\n";
+        }
     } else {
         system += "\nNew file. Output the complete content.\n";
     }
@@ -522,11 +646,19 @@ std::string Session::do_write(const std::string& path, const std::string& descri
     log::info("Generating code for " + path);
     round_counter_++;
 
-    // Use expansion loop so model can @read() dependencies
-    auto code = llm_with_expansion(system, "Generate the complete file for: " + path, 8192, 4);
+    // Direct single call — all reference files already in the prompt
+    auto code = llm_call(system, "Generate the complete file content.", 8192);
     code = strip_fences(code);
 
     if (code.empty()) return "";
+
+    // Sanity check: reject if the LLM returned an error instead of code
+    if (code.find("API Error") == 0 || code.find("<!DOCTYPE") != std::string::npos ||
+        code.find("<html") != std::string::npos || code.find("Error:") == 0 ||
+        code.find("Connection failed") == 0) {
+        log::error("LLM returned error instead of code: " + code.substr(0, 100));
+        return "";
+    }
 
     // Write to disk
     auto full_path = abs_path(path);

@@ -11,15 +11,13 @@ You write production-quality code: complete, compilable, no shortcuts.)";
 }
 
 std::string PromptEngine::task_breakdown(const std::string& project_context) {
-    return R"(You are Cortex, a coding agent. Break the user's request into a numbered task list.
+    return R"(You are Cortex, a coding agent. Break the user's request into a task list.
 
 )" + project_context + R"(
 
-Output a JSON array of tasks:
-[
-  {"title": "short title", "description": "what to do", "files": ["files involved"]},
-  ...
-]
+You MUST respond with ONLY a JSON array. No other text. Start with [ and end with ].
+Format:
+[{"title":"short title","description":"what to do","files":["files involved"]}]
 
 Rules:
 - Each task should be ONE concrete action (read a file, write a file, run a command).
