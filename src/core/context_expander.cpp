@@ -119,17 +119,19 @@ ContextExpander::CompiledContext ContextExpander::compile() const {
     // Compute budget info
     int expanded_tokens = 0;
     int hidden_tokens = 0;
+    int expanded_count = 0;
     for (const auto& [id, item] : items_) {
-        if (item.expanded) expanded_tokens += item.tokens;
+        if (item.expanded) { expanded_tokens += item.tokens; expanded_count++; }
         else hidden_tokens += item.tokens;
     }
 
     // Build actions block with budget awareness
     std::ostringstream act;
     act << "## Context Budget\n";
-    act << "Expanded: " << expanded_tokens << " tokens in context\n";
-    act << "Hidden: " << hidden_tokens << " tokens available\n";
-    act << "Keep expanded tokens LOW. @hide files when done.\n\n";
+    act << "Expanded: " << expanded_count << " items (" << expanded_tokens << " tokens)\n";
+    act << "Hidden: " << (int)items_.size() - expanded_count << " items (" << hidden_tokens << " tokens available)\n";
+    act << "Limit: MAX 4 expanded items. If you @read a 5th, the oldest gets auto-hidden.\n";
+    act << "To control which items stay: @hide items you're done with BEFORE @reading new ones.\n\n";
 
     act << R"(## Actions
 Emit ONE action tag per response, then STOP generating immediately.
@@ -254,8 +256,33 @@ std::optional<std::string> ContextExpander::resolve_action(const ActionTag& tag)
         add_item(id, "file", tag.argument, content);
         expand_item(id);
 
+        // Enforce max expanded items — auto-hide oldest if over limit
+        std::string auto_hide_msg;
+        int max_expanded = 4;  // Tight budget: only 4 items in context at once
+        int expanded_count = 0;
+        std::string oldest_id;
+        std::chrono::steady_clock::time_point oldest_time = std::chrono::steady_clock::now();
+
+        for (const auto& [eid, eitem] : items_) {
+            if (eitem.expanded && eid != id) {
+                expanded_count++;
+                if (eitem.last_accessed < oldest_time) {
+                    oldest_time = eitem.last_accessed;
+                    oldest_id = eid;
+                }
+            }
+        }
+
+        if (expanded_count >= max_expanded && !oldest_id.empty()) {
+            auto hidden_tokens = items_[oldest_id].tokens;
+            hide_item(oldest_id);
+            auto_hide_msg = " (Auto-hid " + oldest_id + " [" +
+                           std::to_string(hidden_tokens) + " tok] to stay within budget)";
+            log::info("Auto-hide: " + oldest_id + " (" + std::to_string(hidden_tokens) + " tok freed)");
+        }
+
         return "Expanded " + id + " (" +
-               std::to_string(estimate_tokens(content)) + " tokens).";
+               std::to_string(estimate_tokens(content)) + " tokens)." + auto_hide_msg;
     }
 
     if (tag.action == "hide") {
