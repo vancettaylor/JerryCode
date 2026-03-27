@@ -116,23 +116,36 @@ ContextExpander::CompiledContext ContextExpander::compile() const {
     }
     ctx.expanded_block = exp.str();
 
-    // Build actions block
+    // Compute budget info
+    int expanded_tokens = 0;
+    int hidden_tokens = 0;
+    for (const auto& [id, item] : items_) {
+        if (item.expanded) expanded_tokens += item.tokens;
+        else hidden_tokens += item.tokens;
+    }
+
+    // Build actions block with budget awareness
     std::ostringstream act;
+    act << "## Context Budget\n";
+    act << "Expanded: " << expanded_tokens << " tokens in context\n";
+    act << "Hidden: " << hidden_tokens << " tokens available\n";
+    act << "Keep expanded tokens LOW. @hide files when done.\n\n";
+
     act << R"(## Actions
 Emit ONE action tag per response, then STOP generating immediately.
 
-  @read(id)    — expand an item into your context (makes [-] become [+])
-  @hide(id)    — remove an item from context (makes [+] become [-])
-                 Use this when you're done referencing something.
-  @search(pat) — search the codebase for a pattern, results added to working set
-  @run(cmd)    — execute a shell command, output added to working set
+  @read(id)    — load a file into context ([-] becomes [+])
+  @hide(id)    — unload a file from context ([+] becomes [-])
+  @search(pat) — search codebase, results added to working set
+  @run(cmd)    — execute a command, output added to working set
   @done()      — signal you are finished
 
 Rules:
-- @read and @hide use the IDs from the Context Index above.
-- HIDE items you no longer need to keep context small.
-- Only expand what you need RIGHT NOW.
-- After @done(), everything before it in your response is your final output.
+- Use IDs from the Context Index above.
+- ALWAYS @hide files you're done referencing before @reading new ones.
+- Keep at most 3-4 items expanded at once.
+- After @done(), everything before it is your final output.
+- If you don't need any actions, just respond normally (no tags).
 )";
     ctx.actions_block = act.str();
 
@@ -215,7 +228,11 @@ std::optional<ActionTag> ContextExpander::find_action(const std::string& text) c
 
 std::optional<std::string> ContextExpander::resolve_action(const ActionTag& tag) {
     if (tag.action == "read") {
-        // Resolve the actual content via the resolver
+        // If already expanded, just confirm
+        if (has_item(tag.argument) && is_expanded(tag.argument)) {
+            return "Already expanded: " + tag.argument + " (check [+] items in index)";
+        }
+
         auto resolver_it = resolvers_.find("read");
         std::string content;
 
@@ -324,9 +341,17 @@ ContextExpander::LoopResult ContextExpander::run(
         prompt << "## Task\n" << task_description << "\n";
 
         if (round > 0) {
-            prompt << "\n(This is round " << (round + 1) << ". "
-                   << "Context has been updated based on your previous actions. "
-                   << "Continue working on the task.)\n";
+            prompt << "\n(Round " << (round + 1) << "/" << max_rounds << ". ";
+            if (st.expanded_items > 3) {
+                prompt << "WARNING: You have " << st.expanded_items << " items expanded ("
+                       << st.expanded_tokens << " tokens). "
+                       << "Consider using @hide(id) to unload items you no longer need. ";
+            }
+            prompt << "If you have enough context, produce your output now with NO action tags.)\n";
+        }
+        if (round >= max_rounds - 2) {
+            prompt << "\nURGENT: Only " << (max_rounds - round) << " rounds left. "
+                   << "Produce your final output NOW or you will run out of rounds.\n";
         }
 
         auto full_prompt = prompt.str();

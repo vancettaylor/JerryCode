@@ -288,37 +288,34 @@ void Session::phase_breakdown(const std::string& request) {
 
     log::info("Phase 1: Breaking down task...");
 
-    // For small projects: pre-read all files and do ONE call (fast)
-    // For large projects: use expansion loop (model explores selectively)
     std::string response;
     auto file_count = expander_.stats().total_items;
 
-    // Always do a single call for decomposition.
-    // Pre-load all small files so the model can plan accurately.
-    std::string all_files;
-    int files_loaded = 0;
-    try {
-        for (const auto& entry : fs::recursive_directory_iterator(project_root_,
-                fs::directory_options::skip_permission_denied)) {
-            if (!entry.is_regular_file()) continue;
-            auto rel = fs::relative(entry.path(), project_root_).string();
-            if (rel[0] == '.' || rel.find("build/") == 0 || rel.find(".cortex/") == 0) continue;
-            auto size = fs::file_size(entry.path());
-            if (size > 10000) continue;  // Skip large files
-            auto content = read_file(rel);
-            if (!content.empty()) {
-                all_files += "\n## " + rel + ":\n" + content + "\n";
-                files_loaded++;
-                if (files_loaded >= 20) break;  // Cap at 20 files
+    if (file_count <= 8) {
+        // Small project: pre-read all files, single LLM call (fast path)
+        std::string all_files;
+        int files_loaded = 0;
+        try {
+            for (const auto& entry : fs::recursive_directory_iterator(project_root_,
+                    fs::directory_options::skip_permission_denied)) {
+                if (!entry.is_regular_file()) continue;
+                auto rel = fs::relative(entry.path(), project_root_).string();
+                if (rel[0] == '.' || rel.find("build/") == 0 || rel.find(".cortex/") == 0) continue;
+                auto content = read_file(rel);
+                if (!content.empty()) {
+                    all_files += "\n## " + rel + ":\n" + content + "\n";
+                    files_loaded++;
+                }
             }
-        }
-    } catch (...) {}
-
-    if (!all_files.empty()) {
-        system += "\n## Current file contents:" + all_files;
+        } catch (...) {}
+        if (!all_files.empty()) system += "\n## File contents:" + all_files;
+        response = llm_call(system, request, 2048);
+    } else {
+        // Large project: use expansion loop — model explores with @read/@hide
+        log::info("Large project (" + std::to_string(file_count) +
+                  " files) — using expansion loop for selective exploration");
+        response = llm_with_expansion(system, request, 2048, 8);
     }
-
-    response = llm_call(system, request, 2048);
 
     log::debug("Breakdown response: " + response.substr(0, 500));
 
@@ -642,17 +639,29 @@ std::string Session::do_write(const std::string& path, const std::string& descri
         system += "\nNew file. Output the complete content.\n";
     }
 
-    // Add all expanded files as reference
-    for (const auto& [p, c] : file_cache_) {
-        if (p == path || c.empty()) continue;
-        system += "\n## Reference: " + p + "\n" + c + "\n";
-    }
-
     log::info("Generating code for " + path);
     round_counter_++;
 
-    // Direct single call — all reference files already in the prompt
-    auto code = llm_call(system, "Generate the complete file content.", 8192);
+    std::string code;
+    auto file_count = expander_.stats().total_items;
+
+    if (file_count <= 8) {
+        // Small project: dump all references, single call
+        for (const auto& [p, c] : file_cache_) {
+            if (p == path || c.empty()) continue;
+            system += "\n## Reference: " + p + "\n" + c + "\n";
+        }
+        code = llm_call(system, "Generate the complete file content.", 8192);
+    } else {
+        // Large project: use expansion loop — model @reads what it needs
+        // The working set has all project files available to @read
+        code = llm_with_expansion(system,
+            "Generate the complete file content for " + path + ". "
+            "Use @read(file) to load any reference files you need. "
+            "Use @hide(file) when you're done with a reference file to free context. "
+            "When ready, output ONLY the raw code with no action tags.",
+            8192, 6);
+    }
     code = strip_fences(code);
 
     if (code.empty()) return "";
