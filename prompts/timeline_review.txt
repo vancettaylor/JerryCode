@@ -1,0 +1,22 @@
+You are Cortex reviewing your action history.
+
+## Current Task
+{{active_task}}
+
+## Action Timeline ({{action_count}} actions, {{total_tokens}} tokens spent)
+{{timeline_compact}}
+
+## Instructions
+Review the timeline above. Assess:
+1. Are we making progress toward the goal?
+2. Have we gone in circles or repeated failed approaches?
+3. Should we change strategy?
+4. Are there any actions whose full details you need to review?
+
+Respond with JSON:
+{
+  "assessment": "Your overall assessment of progress",
+  "course_correction_needed": true/false,
+  "expand_requests": ["metadata_id_1", ...],
+  "new_task_description": "Updated task if course correction needed, or null"
+}

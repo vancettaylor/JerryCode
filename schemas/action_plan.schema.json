@@ -1,0 +1,44 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ActionPlan",
+  "type": "object",
+  "required": ["task_description", "tool_name", "expected_outcome"],
+  "properties": {
+    "task_description": {
+      "type": "string",
+      "description": "Concise description of what this action will accomplish"
+    },
+    "reasoning": {
+      "type": "string",
+      "description": "Why this action and approach were chosen"
+    },
+    "files_needed": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "File paths that should be expanded into context for Phase 2"
+    },
+    "tool_name": {
+      "type": "string",
+      "enum": ["file_read", "file_write", "bash", "glob", "grep", "none"],
+      "description": "Which tool to invoke"
+    },
+    "tool_arguments": {
+      "type": "object",
+      "description": "Arguments to pass to the tool"
+    },
+    "expected_outcome": {
+      "type": "string",
+      "description": "What success looks like after this action completes"
+    },
+    "risk_level": {
+      "type": "string",
+      "enum": ["low", "medium", "high"],
+      "default": "low"
+    },
+    "dependencies": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "IDs of prior actions this depends on"
+    }
+  }
+}
