@@ -1,4 +1,4 @@
-# Cortex
+# JerryCode
 
 **A dual-prompt context-managed coding agent that makes small language models dramatically more capable.**
 
