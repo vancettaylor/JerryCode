@@ -1,132 +1,102 @@
 /**
  * @file task_manager.hpp
- * @brief Task list management: creation, status tracking, and rendering for prompt inclusion.
+ * @brief Hierarchical task management with numbered sub-items and completion metadata.
+ *
+ * Tasks are organized hierarchically: 1, 1.1, 1.2, 2, 2.1, etc.
+ * The model uses @markoff(number) to mark tasks complete, which triggers
+ * a metadata collection prompt for tracking what was done and learned.
  */
-
 #pragma once
 #include <string>
 #include <vector>
 #include <optional>
+#include <unordered_map>
 #include <nlohmann/json.hpp>
 
 namespace cortex {
 
 using Json = nlohmann::json;
 
-/**
- * @brief A single task in the session's work plan.
- */
+/// Metadata collected when a task is marked off.
+struct TaskCompletion {
+    std::string what_was_done;       ///< Brief description of actual work performed.
+    std::vector<std::string> files_changed;  ///< Files that were modified.
+    std::string key_findings;        ///< Anything important learned.
+    std::string issues;              ///< Problems encountered, if any.
+    std::string next_recommended;    ///< What should happen next.
+};
+
+/// A hierarchical task item (supports numbering like 1, 1.1, 1.2, 2).
 struct Task {
-    int id = 0;                              ///< Unique task identifier.
-    std::string title;                       ///< Short title of the task.
-    std::string description;                 ///< Detailed description of what to do.
-    std::string status = "pending";          ///< Status: "pending", "active", "done", "failed", or "blocked".
-    std::vector<std::string> subtasks;       ///< List of subtask descriptions.
-    std::vector<std::string> files_involved; ///< Files this task will read or modify.
-    std::string result;                      ///< Outcome description after completion.
-    int attempts = 0;                        ///< Number of execution attempts so far.
-    int max_attempts = 3;                    ///< Maximum allowed retry attempts.
+    std::string number;              ///< Hierarchical number: "1", "1.1", "1.2", "2".
+    std::string title;               ///< Short title.
+    std::string description;         ///< What to do.
+    std::string type;                ///< "read", "write", "bash", "research", "review".
+    std::string status = "pending";  ///< "pending", "active", "done", "failed", "blocked".
+    std::vector<std::string> files;  ///< Files involved.
+    std::string result;              ///< Outcome after completion.
+    int attempts = 0;                ///< Retry count.
+    int max_attempts = 3;            ///< Max retries.
+    std::optional<TaskCompletion> completion;  ///< Metadata from @markoff.
+    std::vector<Task> subtasks;      ///< Child tasks (1.1, 1.2 under 1).
 };
 
 /**
- * @brief Manages an ordered list of tasks: parsing, status updates, queries, and rendering.
+ * @brief Manages a hierarchical task tree with status tracking and rendering.
  */
 class TaskManager {
 public:
-    /**
-     * @brief Parse and load a task breakdown from JSON (typically LLM output).
-     * @param j JSON object containing the task list.
-     */
+    /// Load from JSON (flat or hierarchical).
     void load_from_json(const Json& j);
 
-    /**
-     * @brief Add a task manually.
-     * @param title Short title for the task.
-     * @param description Optional detailed description.
-     * @return The assigned task ID.
-     */
-    int add_task(const std::string& title, const std::string& description = "");
+    /// Add a top-level task.
+    void add_task(const std::string& number, const std::string& title,
+                  const std::string& description = "", const std::string& type = "write");
 
-    /**
-     * @brief Update a task's status and optionally record its result.
-     * @param id Task ID to update.
-     * @param status New status string.
-     * @param result Optional result description.
-     */
-    void update_status(int id, const std::string& status, const std::string& result = "");
+    /// Update status of a task by number (e.g., "1.2").
+    void update_status(const std::string& number, const std::string& status,
+                       const std::string& result = "");
 
-    /**
-     * @brief Add a subtask description to an existing task.
-     * @param parent_id ID of the parent task.
-     * @param subtask Description of the subtask.
-     */
-    void add_subtask(int parent_id, const std::string& subtask);
+    /// Record completion metadata for a task.
+    void set_completion(const std::string& number, const TaskCompletion& completion);
 
-    /**
-     * @brief Retrieve a task by ID.
-     * @param id Task ID to look up.
-     * @return The task if found, or nullopt.
-     */
-    std::optional<Task> get(int id) const;
+    /// Find task by number.
+    Task* find(const std::string& number);
+    const Task* find(const std::string& number) const;
 
-    /**
-     * @brief Get the next task with "pending" status.
-     * @return The next pending task, or nullopt if none remain.
-     */
-    std::optional<Task> next_pending() const;
+    /// Get next pending task (depth-first).
+    Task* next_pending();
 
-    /**
-     * @brief Get a mutable reference to the currently active task.
-     * @return Reference to the current task.
-     */
-    Task& current();
-
-    /**
-     * @brief Check whether all tasks are done or failed.
-     * @return True if no tasks are pending or active.
-     */
+    /// Check if all tasks are done or failed.
     bool all_done() const;
 
-    /**
-     * @brief Count tasks with "done" status.
-     * @return Number of completed tasks.
-     */
+    /// Count tasks by status.
     int completed_count() const;
-
-    /**
-     * @brief Get the total number of tasks.
-     * @return Total task count.
-     */
     int total_count() const;
-
-    /**
-     * @brief Count tasks with "failed" status.
-     * @return Number of failed tasks.
-     */
     int failed_count() const;
 
-    /**
-     * @brief Render the full task list as a formatted string for prompt inclusion.
-     * @return Multi-line task list string.
-     */
+    /// Render the full hierarchical task list for prompt inclusion.
     std::string render() const;
 
-    /**
-     * @brief Render a compact single-line-per-task summary.
-     * @return Compact task list string.
-     */
+    /// Render a compact summary line.
     std::string render_compact() const;
 
-    /**
-     * @brief Serialize the task list to JSON.
-     * @return JSON representation of all tasks.
-     */
+    /// Serialize to JSON.
     Json to_json() const;
 
+    /// Get all top-level tasks.
+    const std::vector<Task>& tasks() const { return tasks_; }
+
 private:
-    std::vector<Task> tasks_; ///< Ordered list of tasks.
-    int next_id_ = 1;        ///< Next ID to assign.
-    int current_id_ = -1;    ///< ID of the currently active task (-1 if none).
+    void render_task(const Task& t, std::ostringstream& ss, int indent) const;
+    int count_recursive(const std::vector<Task>& tasks, const std::string& status) const;
+    int count_all_recursive(const std::vector<Task>& tasks) const;
+    Task* find_recursive(std::vector<Task>& tasks, const std::string& number);
+    const Task* find_recursive(const std::vector<Task>& tasks, const std::string& number) const;
+    Task* next_pending_recursive(std::vector<Task>& tasks);
+    bool all_done_recursive(const std::vector<Task>& tasks) const;
+
+    std::vector<Task> tasks_;
 };
 
 } // namespace cortex

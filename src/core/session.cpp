@@ -64,6 +64,31 @@ Session::Session(std::unique_ptr<IProvider> provider,
         return do_bash(arg);
     });
 
+    // @note(text) — record a finding to the session notebook
+    expander_.register_action("note", [this](const std::string& arg) -> std::optional<std::string> {
+        auto id = notebook_.add(arg, "round " + std::to_string(round_counter_));
+        log::info("Note #" + std::to_string(id) + ": " + arg.substr(0, 80));
+        return "Note #" + std::to_string(id) + " recorded.";
+    });
+
+    // @markoff(number) — mark a task as complete
+    expander_.register_action("markoff", [this](const std::string& arg) -> std::optional<std::string> {
+        auto* task = tasks_.find(arg);
+        if (!task) return "Task " + arg + " not found.";
+        tasks_.update_status(arg, "done");
+        log::info("Marked off task " + arg + ": " + task->title);
+        return "Task " + arg + " marked as done.";
+    });
+
+    // Load prompt templates from JSON file
+    std::string template_path = project_root_ + "/prompts/templates.json";
+    if (!templates_.load(template_path)) {
+        // Try the build-time prompts directory
+        #ifdef CORTEX_PROMPTS_DIR
+        templates_.load(std::string(CORTEX_PROMPTS_DIR) + "/templates.json");
+        #endif
+    }
+
     // Register project files in the working set (hidden, lazy-loaded)
     try {
         for (const auto& entry : fs::recursive_directory_iterator(project_root_,
@@ -381,9 +406,11 @@ void Session::phase_breakdown(const std::string& request) {
         auto json = Json::parse(json_str);
         tasks_.load_from_json(json);
         log::info("Task breakdown: " + std::to_string(tasks_.total_count()) + " tasks");
-        for (int i = 1; i <= tasks_.total_count(); i++) {
-            auto t = tasks_.get(i);
-            if (t) log::info("  #" + std::to_string(i) + " " + t->title);
+        for (const auto& t : tasks_.tasks()) {
+            log::info("  " + t.number + " " + t.title);
+            for (const auto& st : t.subtasks) {
+                log::info("    " + st.number + " " + st.title);
+            }
         }
     } catch (const std::exception& e) {
         log::error("Failed to parse task breakdown: " + std::string(e.what()));
@@ -403,36 +430,33 @@ void Session::phase_execute(SessionCallbacks& cb) {
         auto next = tasks_.next_pending();
         if (!next) break;
 
-        int task_id = next->id;
-        tasks_.update_status(task_id, "active");
-        auto task = *tasks_.get(task_id);  // Copy for working
+        auto task_number = next->number;
+        tasks_.update_status(task_number, "active");
+        auto task = *next;  // Copy for working
 
-        if (cb.on_phase) cb.on_phase("task " + std::to_string(task.id) + "/" +
+        if (cb.on_phase) cb.on_phase("task " + task.number + "/" +
                                       std::to_string(tasks_.total_count()) + ": " + task.title);
         if (cb.on_status) cb.on_status(tasks_.render_compact());
 
-        log::info("Executing task #" + std::to_string(task.id) + ": " + task.title +
+        log::info("Executing task #" + task.number + ": " + task.title +
                   " (attempt " + std::to_string(task.attempts + 1) + ")");
         total_attempts++;
 
         bool success = execute_task(task, cb);
 
         if (success) {
-            tasks_.update_status(task_id, "done", task.result);
-            action_log_.push_back("OK #" + std::to_string(task.id) + " " + task.title);
+            tasks_.update_status(task_number, "done", task.result);
+            action_log_.push_back("OK #" + task.number + " " + task.title);
         } else {
             int attempts = task.attempts + 1;
             if (attempts >= task.max_attempts) {
-                tasks_.update_status(task_id, "failed", task.result);
-                action_log_.push_back("FAIL #" + std::to_string(task.id) + " " + task.title);
-                log::warn("Task #" + std::to_string(task.id) + " failed after " +
+                tasks_.update_status(task_number, "failed", task.result);
+                action_log_.push_back("FAIL #" + task.number + " " + task.title);
+                log::warn("Task #" + task.number + " failed after " +
                           std::to_string(attempts) + " attempts");
             } else {
-                // Update attempts count and re-queue
-                auto t = tasks_.get(task_id);
-                // Can't update attempts directly — mark as failed
-                tasks_.update_status(task_id, "failed", task.result);
-                action_log_.push_back("FAIL #" + std::to_string(task.id) + " " + task.title);
+                tasks_.update_status(task_number, "failed", task.result);
+                action_log_.push_back("FAIL " + task.number + " " + task.title);
             }
         }
 
@@ -468,7 +492,7 @@ bool Session::execute_task(Task& task, SessionCallbacks& cb) {
     }
     // Fallback to files_involved only if nothing found in title/description
     if (target_file.empty()) {
-        for (const auto& f : task.files_involved) {
+        for (const auto& f : task.files) {
             target_file = f; break;
         }
     }
@@ -816,9 +840,9 @@ void Session::review_progress(SessionCallbacks& cb) {
 
         if (review.contains("should_retry_failed") && review["should_retry_failed"].is_array()) {
             for (const auto& id : review["should_retry_failed"]) {
-                int task_id = id.get<int>();
-                tasks_.update_status(task_id, "pending");
-                log::info("  Retrying task #" + std::to_string(task_id));
+                auto retry_num = id.get<std::string>();
+                tasks_.update_status(retry_num, "pending");
+                log::info("  Retrying task " + retry_num);
             }
         }
 

@@ -54,6 +54,8 @@ add_library(cortex_lib STATIC
     src/core/context_expander.cpp
     src/core/task_manager.cpp
     src/core/prompt_engine.cpp
+    src/core/template_store.cpp
+    src/core/notebook.cpp
     src/core/session.cpp
     src/core/orchestrator.cpp
     src/core/timeline.cpp

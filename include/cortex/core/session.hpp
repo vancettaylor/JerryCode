@@ -7,6 +7,8 @@
 #include "cortex/core/types.hpp"
 #include "cortex/core/context_expander.hpp"
 #include "cortex/core/task_manager.hpp"
+#include "cortex/core/template_store.hpp"
+#include "cortex/core/notebook.hpp"
 #include "cortex/core/prompt_engine.hpp"
 #include "cortex/agents/agent_registry.hpp"
 #include "cortex/providers/provider.hpp"
@@ -198,6 +200,8 @@ private:
 
     ContextExpander expander_;               ///< Manages the working-set context window.
     TaskManager tasks_;                      ///< Manages the task list and statuses.
+    TemplateStore templates_;                ///< Runtime-loaded prompt templates.
+    Notebook notebook_;                      ///< Session notes for knowledge accumulation.
     SessionStats stats_;                     ///< Accumulated session statistics.
 
     std::unordered_map<std::string, std::string> file_cache_; ///< Cache of file contents by path.
