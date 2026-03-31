@@ -1,4 +1,15 @@
-#include "cortex/core/orchestrator.hpp"
+/**
+ * @file main.cpp
+ * @brief JerryCode entry point — launches TUI or test harness.
+ *
+ * Usage:
+ *   jerrycode                    # Launch TUI in current directory
+ *   jerrycode --project /path    # Launch TUI for specific project
+ *   jerrycode --init             # Generate default cortex.json
+ *   jerrycode --help             # Show help
+ */
+
+#include "cortex/tui/app.hpp"
 #include "cortex/agents/agent_registry.hpp"
 #include "cortex/agents/file_read_agent.hpp"
 #include "cortex/agents/file_write_agent.hpp"
@@ -14,7 +25,6 @@
 #include "cortex/providers/anthropic.hpp"
 #include "cortex/providers/openai.hpp"
 #include "cortex/storage/project_state.hpp"
-#include "cortex/tui/app.hpp"
 #include "cortex/util/config.hpp"
 #include "cortex/util/log.hpp"
 #include <iostream>
@@ -27,7 +37,7 @@ int main(int argc, char* argv[]) {
     std::string project_root = std::filesystem::current_path().string();
     bool init_config = false;
 
-    // Pre-parse for --project and --init so we know where to load config from
+    // Pre-parse for --project and --init
     for (int i = 1; i < argc; i++) {
         std::string arg = argv[i];
         if (arg == "--project" && i + 1 < argc) project_root = argv[++i];
@@ -42,48 +52,39 @@ int main(int argc, char* argv[]) {
         return 0;
     }
 
-    // Load config from files + env (layered: defaults -> global -> project -> env)
+    // Load config (layered: defaults -> global -> project -> env -> CLI)
     auto config = load_config(project_root);
 
-    // CLI args override config
+    // CLI overrides
     for (int i = 1; i < argc; i++) {
         std::string arg = argv[i];
-        if (arg == "--project" && i + 1 < argc) {
-            i++; // Already handled above
-        } else if (arg == "--model" && i + 1 < argc) {
-            config.model = argv[++i];
-        } else if (arg == "--provider" && i + 1 < argc) {
-            config.provider = argv[++i];
-        } else if (arg == "--base-url" && i + 1 < argc) {
-            config.base_url = argv[++i];
-        } else if (arg == "--help") {
-            std::cout << "Cortex - Dual-prompt context-managed coding agent\n\n"
-                      << "Usage: cortex [options]\n\n"
+        if (arg == "--project" && i + 1 < argc) { i++; }
+        else if (arg == "--model" && i + 1 < argc) config.model = argv[++i];
+        else if (arg == "--provider" && i + 1 < argc) config.provider = argv[++i];
+        else if (arg == "--base-url" && i + 1 < argc) config.base_url = argv[++i];
+        else if (arg == "--help") {
+            std::cout << "JerryCode — context-managed coding agent\n\n"
+                      << "Usage: jerrycode [options]\n\n"
                       << "Options:\n"
-                      << "  --project <path>      Set project root (default: cwd)\n"
-                      << "  --model <model>       Set model name\n"
-                      << "  --provider <name>     Set provider ID from config\n"
-                      << "  --base-url <url>      Override API base URL\n"
-                      << "  --init                Write default cortex.json to project root\n"
+                      << "  --project <path>      Project root (default: cwd)\n"
+                      << "  --model <model>       Model name\n"
+                      << "  --provider <name>     Provider ID\n"
+                      << "  --base-url <url>      API base URL\n"
+                      << "  --init                Generate cortex.json\n"
                       << "  --help                Show this help\n\n"
-                      << "Config precedence: defaults -> ~/.config/cortex/config.json -> ./cortex.json -> env vars -> CLI\n\n"
-                      << "Environment variables:\n"
-                      << "  CORTEX_PROVIDER       Provider ID\n"
-                      << "  CORTEX_MODEL          Model ID\n"
-                      << "  CORTEX_BASE_URL       API base URL\n"
-                      << "  ANTHROPIC_API_KEY     Anthropic API key\n"
-                      << "  OPENAI_API_KEY        OpenAI API key\n";
+                      << "TUI Commands:\n"
+                      << "  /sidebar              Toggle sidebar\n"
+                      << "  /clear                Clear chat\n"
+                      << "  /quit                 Exit\n\n";
 
-            // List configured providers
             if (!config.providers.empty()) {
-                std::cout << "\nConfigured providers:\n";
+                std::cout << "Configured providers:\n";
                 for (const auto& p : config.providers) {
                     std::cout << "  " << p.id << " (" << p.name << ") " << p.base_url;
                     if (p.requires_auth) std::cout << " [auth required]";
                     std::cout << "\n";
                     for (const auto& m : p.models) {
-                        std::cout << "    - " << m.id << " (" << m.name << ", "
-                                  << m.context_window / 1024 << "K context)\n";
+                        std::cout << "    - " << m.id << " (" << m.name << ")\n";
                     }
                 }
             }
@@ -91,11 +92,10 @@ int main(int argc, char* argv[]) {
         }
     }
 
-    // Validate auth for providers that need it
+    // Auth check
     for (const auto& p : config.providers) {
         if (p.id == config.provider && p.requires_auth && config.api_key.empty()) {
-            std::cerr << "Error: Provider '" << config.provider << "' requires authentication.\n"
-                      << "Set the appropriate API key environment variable.\n";
+            std::cerr << "Error: Provider '" << config.provider << "' requires authentication.\n";
             return 1;
         }
     }
@@ -103,20 +103,18 @@ int main(int argc, char* argv[]) {
     // Setup logging
     ProjectState project(project_root);
     project.ensure_data_dir();
-    log::set_file(project.data_dir() + "/cortex.log");
+    log::set_file(project.data_dir() + "/jerrycode.log");
     log::set_level(log::Level::Debug);
-    log::info("Cortex starting in " + project_root);
-    log::info("Provider: " + config.provider + " | Model: " + config.model);
-    log::info("Base URL: " + config.base_url);
+    log::info("JerryCode starting | provider=" + config.provider +
+              " model=" + config.model + " project=" + project_root);
 
-    // Create tools
+    // Create tools and agents
     auto file_read_tool  = std::make_shared<FileReadTool>();
     auto file_write_tool = std::make_shared<FileWriteTool>();
     auto bash_tool       = std::make_shared<BashTool>();
     auto glob_tool       = std::make_shared<GlobTool>();
     auto grep_tool       = std::make_shared<GrepTool>();
 
-    // Create agents with tools
     AgentRegistry agents;
     agents.register_agent(std::make_unique<FileReadAgent>(file_read_tool));
     agents.register_agent(std::make_unique<FileWriteAgent>(file_write_tool));
@@ -125,23 +123,10 @@ int main(int argc, char* argv[]) {
     agents.register_agent(std::make_unique<GlobAgent>(glob_tool));
     agents.register_agent(std::make_unique<GrepAgent>(grep_tool));
 
-    // Create provider based on config
-    // Providers with "anthropic" in their ID use the Anthropic API format
-    // Everything else uses the OpenAI-compatible format
-    std::unique_ptr<IProvider> provider;
-    if (config.provider == "anthropic") {
-        provider = std::make_unique<AnthropicProvider>();
-    } else {
-        // Default: OpenAI-compatible (works with ATM-AI, OpenAI, and any compatible server)
-        provider = std::make_unique<OpenAiProvider>();
-    }
-
-    // Create orchestrator
     auto provider_config = to_provider_config(config);
-    Orchestrator orchestrator(std::move(provider), agents, project_root, provider_config);
 
-    // Run TUI
-    App app(orchestrator);
+    // Launch TUI
+    TuiApp app(project_root, provider_config, agents, config);
     app.run();
 
     return 0;

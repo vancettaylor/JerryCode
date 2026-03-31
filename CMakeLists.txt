@@ -116,8 +116,8 @@ target_compile_definitions(cortex_lib PUBLIC
 )
 
 # ─── Executable ─────────────────────────────────────────────────
-add_executable(cortex src/main.cpp)
-target_link_libraries(cortex PRIVATE cortex_lib)
+add_executable(jerrycode src/main.cpp)
+target_link_libraries(jerrycode PRIVATE cortex_lib)
 
 # ─── Test harness (non-TUI, for development testing) ───────────
 add_executable(cortex_test_harness src/test_harness.cpp)
