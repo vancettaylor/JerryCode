@@ -1,3 +1,22 @@
+/**
+ * @file session.cpp
+ * @brief Session implementation — the core orchestration engine.
+ *
+ * A Session handles a single user request from start to finish:
+ *   1. Decomposes the request into discrete tasks (using LLM)
+ *   2. Executes each task: read files, generate code, run commands
+ *   3. Handles errors: analyzes failures, generates fixes, retries
+ *   4. Tracks statistics: LLM calls, tokens, context usage
+ *
+ * The Session uses the ContextExpander for working set management
+ * (large projects) and direct LLM calls for small projects.
+ *
+ * Key design decisions:
+ * - Small projects (≤8 files): all files pre-loaded, single LLM call per step
+ * - Large projects (>8 files): expansion loop with @read/@hide
+ * - Task classification: keyword-based with file extension detection
+ * - Error recovery: meta-agent analyzes errors, targets correct file
+ */
 #include "cortex/core/session.hpp"
 #include "cortex/util/uuid.hpp"
 #include "cortex/util/log.hpp"

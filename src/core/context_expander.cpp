@@ -1,3 +1,24 @@
+/**
+ * @file context_expander.cpp
+ * @brief Context expansion engine — manages the model's working set.
+ *
+ * The ContextExpander maintains a working set of items (files, search results,
+ * command outputs) that can be expanded into or hidden from the model's context.
+ *
+ * Key concepts:
+ * - Items have an ID, content, and expanded/hidden state
+ * - The index shows all items with [+] expanded / [-] hidden markers
+ * - @read(id) loads content and expands an item
+ * - @hide(id) removes content from context (item stays in index)
+ * - Auto-hide: when more than 4 items are expanded, oldest is auto-hidden
+ * - Each round compiles a fresh prompt (no chat history accumulation)
+ *
+ * The expansion loop:
+ *   1. Compile prompt from system_prompt + index + expanded content + actions
+ *   2. Call LLM
+ *   3. If output contains @action tag → resolve it → goto 1
+ *   4. If no action tag → output is final
+ */
 #include "cortex/core/context_expander.hpp"
 #include "cortex/util/log.hpp"
 #include <sstream>
