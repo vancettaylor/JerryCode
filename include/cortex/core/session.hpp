@@ -191,6 +191,9 @@ private:
      */
     std::string abs_path(const std::string& rel_path) const;
 
+    /// Scan project environment: languages, build system, structure.
+    std::string scan_environment();
+
     // Members
     std::unique_ptr<IProvider> provider_;    ///< LLM provider for model calls.
     ProviderConfig provider_config_;         ///< Provider configuration.
@@ -204,6 +207,7 @@ private:
     Notebook notebook_;                      ///< Session notes for knowledge accumulation.
     SessionStats stats_;                     ///< Accumulated session statistics.
 
+    std::string env_summary_;                ///< Environment scan summary.
     std::unordered_map<std::string, std::string> file_cache_; ///< Cache of file contents by path.
     std::vector<std::string> action_log_;    ///< Log of actions taken during the session.
     int round_counter_ = 0;                  ///< Global round counter across all tasks.

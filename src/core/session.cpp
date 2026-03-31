@@ -108,6 +108,88 @@ Session::Session(std::unique_ptr<IProvider> provider,
               " files indexed in " + project_root_);
 }
 
+// ─── Environment Scan ─────────────────────────────────────────
+
+std::string Session::scan_environment() {
+    std::unordered_map<std::string, int> ext_counts;
+    std::vector<std::string> all_files;
+    int total_files = 0;
+    int total_bytes = 0;
+    std::string build_system = "none";
+    std::vector<std::string> entry_points;
+
+    try {
+        for (const auto& entry : fs::recursive_directory_iterator(project_root_,
+                fs::directory_options::skip_permission_denied)) {
+            if (!entry.is_regular_file()) continue;
+            auto rel = fs::relative(entry.path(), project_root_).string();
+            if (rel[0] == '.' || rel.find("/.") != std::string::npos) continue;
+            if (rel.find("build/") == 0 || rel.find("node_modules/") == 0) continue;
+            if (rel.find(".cortex/") == 0) continue;
+
+            total_files++;
+            total_bytes += fs::file_size(entry.path());
+            all_files.push_back(rel);
+
+            // Count extensions
+            auto ext = entry.path().extension().string();
+            if (!ext.empty()) ext_counts[ext]++;
+
+            // Detect build system
+            auto fname = entry.path().filename().string();
+            if (fname == "CMakeLists.txt") build_system = "cmake";
+            else if (fname == "Makefile" || fname == "makefile") build_system = "make";
+            else if (fname == "Cargo.toml") build_system = "cargo";
+            else if (fname == "package.json") build_system = "npm";
+            else if (fname == "setup.py" || fname == "pyproject.toml") build_system = "python";
+
+            // Detect entry points
+            if (fname == "main.cpp" || fname == "main.py" || fname == "main.c" ||
+                fname == "main.rs" || fname == "main.go" || fname == "index.js" ||
+                fname == "index.ts" || fname == "app.py") {
+                entry_points.push_back(rel);
+            }
+        }
+    } catch (const fs::filesystem_error&) {}
+
+    // Determine languages
+    std::vector<std::pair<std::string, int>> sorted_exts(ext_counts.begin(), ext_counts.end());
+    std::sort(sorted_exts.begin(), sorted_exts.end(),
+        [](const auto& a, const auto& b) { return a.second > b.second; });
+
+    // Build summary
+    std::ostringstream ss;
+    ss << "Project: " << project_root_ << "\n";
+    ss << "Files: " << total_files << " (" << total_bytes / 1024 << "KB)\n";
+    ss << "Build: " << build_system << "\n";
+
+    ss << "Languages:";
+    for (size_t i = 0; i < sorted_exts.size() && i < 5; i++) {
+        ss << " " << sorted_exts[i].first << "(" << sorted_exts[i].second << ")";
+    }
+    ss << "\n";
+
+    if (!entry_points.empty()) {
+        ss << "Entry points:";
+        for (const auto& ep : entry_points) ss << " " << ep;
+        ss << "\n";
+    }
+
+    // List key directories
+    std::unordered_map<std::string, int> dirs;
+    for (const auto& f : all_files) {
+        auto slash = f.find('/');
+        if (slash != std::string::npos) dirs[f.substr(0, slash)]++;
+    }
+    if (!dirs.empty()) {
+        ss << "Directories:";
+        for (const auto& [d, c] : dirs) ss << " " << d << "/(" << c << ")";
+        ss << "\n";
+    }
+
+    return ss.str();
+}
+
 // ─── File Helpers ─────────────────────────────────────────────
 
 std::string Session::abs_path(const std::string& rel_path) const {
@@ -289,6 +371,11 @@ void Session::run(const std::string& user_request, SessionCallbacks cb) {
 
     log::info("=== Session start: " + user_request.substr(0, 80) + " ===");
 
+    // Phase 0: Environment scan (no LLM call, deterministic)
+    if (cb.on_phase) cb.on_phase("scanning environment");
+    env_summary_ = scan_environment();
+    log::info("Environment: " + env_summary_.substr(0, 200));
+
     // Phase 1: Break down the request
     if (cb.on_phase) cb.on_phase("breaking down task");
     phase_breakdown(user_request);
@@ -318,17 +405,22 @@ void Session::run(const std::string& user_request, SessionCallbacks cb) {
 // ─── Phase 1: Task Breakdown ─────────────────────────────────
 
 void Session::phase_breakdown(const std::string& request) {
-    // Build project context
+    // Build project context from environment scan + file index
     std::ostringstream project_ctx;
-    project_ctx << "## Project: " << project_root_ << "\n";
-    project_ctx << "## Files:\n";
-    auto st = expander_.stats();
-    for (int i = 0; i < st.total_items && i < 50; i++) {
-        // Just use the index render
-    }
+    project_ctx << "## Environment\n" << env_summary_ << "\n";
     project_ctx << expander_.compile().index_block;
 
-    auto system = PromptEngine::task_breakdown(project_ctx.str());
+    // Use template store if loaded, fall back to PromptEngine
+    std::string system;
+    if (templates_.has("preparation.task_planning")) {
+        system = templates_.render("preparation.task_planning", {
+            {"project_summary", env_summary_},
+            {"env_analysis", project_ctx.str()},
+            {"user_request", request}
+        });
+    } else {
+        system = PromptEngine::task_breakdown(project_ctx.str());
+    }
 
     log::info("Phase 1: Breaking down task...");
 
@@ -359,6 +451,11 @@ void Session::phase_breakdown(const std::string& request) {
         log::info("Large project (" + std::to_string(file_count) +
                   " files) — using expansion loop for selective exploration");
         response = llm_with_expansion(system, request, 2048, 8);
+    }
+
+    // Strip markdown fences if present (model sometimes wraps JSON in ```json)
+    if (response.find("```") != std::string::npos) {
+        response = strip_fences(response);
     }
 
     log::debug("Breakdown response: " + response.substr(0, 500));
@@ -524,7 +621,7 @@ bool Session::execute_task(Task& task, SessionCallbacks& cb) {
             bash_cmd = desc;
         } else {
             // Search within title/desc for a command
-            std::regex search_re(R"(\b(g\+\+\s+[^\n]+|make\b|python3?\s+\S+|\.\/\S+|bash\s+\S+|cmake\s+[^\n]+))");
+            std::regex search_re(R"(\b(g\+\+\s+[^\n]+|make\b|python3?\s+\S+|\.\/\S+|cmake\s+[^\n]+))");
             if (std::regex_search(title, match, search_re)) bash_cmd = match[1].str();
             else if (std::regex_search(desc, match, search_re)) bash_cmd = match[1].str();
             else if (std::regex_search(original_request_, match, search_re)) bash_cmd = match[1].str();
@@ -626,7 +723,15 @@ std::string Session::do_write(const std::string& path, const std::string& descri
     auto existing = read_file(path);
 
     // Build code gen prompt
-    auto system = PromptEngine::code_gen(path, description, original_request_);
+    std::string system;
+    if (templates_.has("code_gen.system")) {
+        system = templates_.render("code_gen.system", {}) +
+                 "\n\n## File: " + path +
+                 "\n## Task: " + description +
+                 "\n## Original Request: " + original_request_ + "\n";
+    } else {
+        system = PromptEngine::code_gen(path, description, original_request_);
+    }
 
     if (!existing.empty()) {
         // Detect if this is a bug fix task
@@ -723,7 +828,12 @@ std::string Session::do_bash(const std::string& command) {
 
 bool Session::try_fix_error(const std::string& error_output, SessionCallbacks& cb) {
     // Use meta-agent to analyze the error
-    auto analysis_prompt = PromptEngine::error_analysis(error_output);
+    std::string analysis_prompt;
+    if (templates_.has("error_handling.analysis")) {
+        analysis_prompt = templates_.get("error_handling.analysis") + "\n\n## Errors:\n" + error_output;
+    } else {
+        analysis_prompt = PromptEngine::error_analysis(error_output);
+    }
 
     // Add all cached files for reference
     for (const auto& [p, c] : file_cache_) {
@@ -753,7 +863,13 @@ bool Session::try_fix_error(const std::string& error_output, SessionCallbacks& c
         if (current.empty()) return false;
 
         // Generate fix
-        auto fix_prompt = PromptEngine::error_fix(target_file, error_output);
+        std::string fix_prompt;
+        if (templates_.has("error_handling.fix")) {
+            fix_prompt = templates_.get("error_handling.fix") +
+                         "\n\n## File: " + target_file + "\n## Error:\n" + error_output;
+        } else {
+            fix_prompt = PromptEngine::error_fix(target_file, error_output);
+        }
         fix_prompt += "\n## Current code:\n" + current + "\n";
         fix_prompt += "\n## Fix: " + fix_desc + "\n";
 
@@ -793,7 +909,9 @@ bool Session::try_fix_error(const std::string& error_output, SessionCallbacks& c
 void Session::review_progress(SessionCallbacks& cb) {
     log::info("Progress review...");
 
-    auto system = PromptEngine::progress_review();
+    auto system = templates_.has("meta_agents.progress_review")
+        ? templates_.get("meta_agents.progress_review")
+        : PromptEngine::progress_review();
     system += "\n\n" + tasks_.render();
     system += "\n## Action Log:\n";
     for (const auto& a : action_log_) system += "  " + a + "\n";

@@ -15,25 +15,21 @@ std::string PromptEngine::task_breakdown(const std::string& project_context) {
 
 )" + project_context + R"(
 
-You MUST respond with ONLY a JSON array. No other text. Start with [ and end with ].
-Format:
-[{"title":"short title","description":"what to do","type":"read|write|bash","files":["files"],"command":"shell command for bash tasks"}]
+Respond with ONLY a JSON array. No markdown fences. No text before or after. Just [].
 
-Rules:
-- type is REQUIRED: "read" to examine a file, "write" to create/modify, "bash" to run a command.
-- For bash tasks, the "command" field must contain the EXACT shell command to run.
-- For write tasks, "files" should list the file to create/modify.
-- Read existing files before modifying them.
-- After writing code, include a compile/test bash task with the full compile command.
-- Keep it minimal. Order matters: dependencies first.
+Each task: {"title":"...","type":"read|write|bash","files":["..."],"command":"..."}
+- type "read": read a file. files = [file to read].
+- type "write": create/modify a file. files = [file to write]. description = what to change.
+- type "bash": run a command. command = EXACT shell command.
+
+RULES:
+- NO subtasks. Flat list only.
+- bash tasks MUST have a "command" field with the exact command.
+- Read files before modifying. Compile after writing code.
+- Keep it SHORT. 3-6 tasks max.
 
 Example:
-[
-  {"title":"Read main.cpp","type":"read","files":["main.cpp"]},
-  {"title":"Add greet function","type":"write","description":"Add greet() and call from main","files":["main.cpp"]},
-  {"title":"Compile","type":"bash","command":"g++ -std=c++17 -o test main.cpp"},
-  {"title":"Run","type":"bash","command":"./test"}
-])";
+[{"title":"Read main.cpp","type":"read","files":["main.cpp"]},{"title":"Add function","type":"write","files":["main.cpp"],"description":"Add greet function"},{"title":"Compile","type":"bash","command":"g++ -std=c++17 -o test main.cpp"},{"title":"Run","type":"bash","command":"./test"}])";
 }
 
 std::string PromptEngine::action_prompt(
