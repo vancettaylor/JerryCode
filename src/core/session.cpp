@@ -474,105 +474,74 @@ void Session::phase_execute(SessionCallbacks& cb) {
 
 bool Session::execute_task(Task& task, SessionCallbacks& cb) {
     // Determine action type from the task title/description
-    auto title_lower = task.title;
-    std::transform(title_lower.begin(), title_lower.end(), title_lower.begin(), ::tolower);
-    auto desc_lower = task.description;
-    std::transform(desc_lower.begin(), desc_lower.end(), desc_lower.begin(), ::tolower);
-    auto combined = title_lower + " " + desc_lower;
+    // Use the task's type field for classification (set by decomposition LLM)
+    // Fallback to keyword-based if type is empty
+    std::string task_type = task.type;
 
-    // Extract target file — prefer title (it names the file to create/modify)
-    // over files_involved (which may list input/dependency files)
+    // Extract target file from task
     std::string target_file;
-    std::regex file_re(R"((\S+\.(?:cpp|hpp|h|c|py|js|ts|sh|txt|json|md|rs|go|java|rb|css|html))\b)");
-    std::smatch match;
-    if (std::regex_search(task.title, match, file_re)) {
-        target_file = match[1].str();
-    } else if (std::regex_search(task.description, match, file_re)) {
-        target_file = match[1].str();
-    }
-    // Fallback to files_involved only if nothing found in title/description
+    if (!task.files.empty()) target_file = task.files[0];
     if (target_file.empty()) {
-        for (const auto& f : task.files) {
-            target_file = f; break;
-        }
-    }
-
-    // Detect action type — write takes priority if a target file is found
-    bool has_file = !target_file.empty();
-    bool mentions_create = combined.find("create ") != std::string::npos ||
-                           combined.find("write ") != std::string::npos ||
-                           combined.find("add ") != std::string::npos ||
-                           combined.find("modify ") != std::string::npos ||
-                           combined.find("update ") != std::string::npos ||
-                           combined.find("implement") != std::string::npos ||
-                           combined.find("fix ") != std::string::npos ||
-                           combined.find("refactor") != std::string::npos ||
-                           combined.find("change ") != std::string::npos ||
-                           combined.find("replace ") != std::string::npos;
-    bool mentions_read = combined.find("read ") != std::string::npos ||
-                         combined.find("examine") != std::string::npos ||
-                         combined.find("understand") != std::string::npos;
-    bool mentions_bash = combined.find("compile") != std::string::npos ||
-                         combined.find("run ") != std::string::npos ||
-                         combined.find("execute") != std::string::npos ||
-                         combined.find("make") != std::string::npos;
-
-    // Priority: if task mentions creating/writing a file, it's a write
-    // "test" alone doesn't mean bash — "create main.py to test" is still a write
-    bool is_write = has_file && mentions_create;
-    bool is_read = has_file && mentions_read && !mentions_create;
-    bool is_bash = mentions_bash && !is_write && !is_read;
-
-    // Also classify tasks that are purely about verification/testing as bash
-    if (!is_write && !is_read && !is_bash) {
-        if (combined.find("test ") != std::string::npos ||
-            combined.find("verify") != std::string::npos ||
-            combined.find("check ") != std::string::npos) {
-            is_bash = true;
-        }
-    }
-
-    // Extract bash command
-    std::string bash_cmd;
-    if (is_bash) {
-        // Look for command patterns
-        std::regex cmd_re(R"((\bg\+\+\s[^"]*|\bmake\b[^"]*|\bpython3?\s+\S+|\.\/\S+|\bbash\s+\S+\.sh|\bcmake\s[^"]*|\bnpm\s+\S+|\bcargo\s+\S+))");
+        std::regex file_re(R"((\S+\.(?:cpp|hpp|h|c|py|js|ts|sh|txt|json|md|rs|go|java|rb|css|html))\b)");
         std::smatch match;
-        if (std::regex_search(task.title, match, cmd_re)) {
-            bash_cmd = match[1].str();
-        } else if (std::regex_search(task.description, match, cmd_re)) {
-            bash_cmd = match[1].str();
-        } else if (std::regex_search(original_request_, match, cmd_re)) {
-            bash_cmd = match[1].str();
+        if (std::regex_search(task.title, match, file_re)) target_file = match[1].str();
+        else if (std::regex_search(task.description, match, file_re)) target_file = match[1].str();
+    }
+
+    // If no type from decomposition, classify by keywords
+    if (task_type.empty()) {
+        auto combined = task.title + " " + task.description;
+        std::transform(combined.begin(), combined.end(), combined.begin(), ::tolower);
+        if (combined.find("compile") != std::string::npos || combined.find("run ") != std::string::npos)
+            task_type = "bash";
+        else if (combined.find("create ") != std::string::npos || combined.find("write ") != std::string::npos ||
+                 combined.find("add ") != std::string::npos || combined.find("modify ") != std::string::npos ||
+                 combined.find("fix ") != std::string::npos || combined.find("update ") != std::string::npos)
+            task_type = "write";
+        else if (combined.find("read ") != std::string::npos || combined.find("examine") != std::string::npos)
+            task_type = "read";
+        else
+            task_type = "write";  // Default to write if we have a file
+    }
+
+    // For bash tasks, the command should come from the task's JSON
+    // (set by decomposition LLM in the "command" field)
+    // Fallback: extract from title/description/original request
+    std::string bash_cmd;
+    // The task_manager stores command in the description for bash tasks
+    // since our Task struct doesn't have a separate command field yet.
+    // For now, check if description looks like a command.
+    if (task_type == "bash") {
+        // Check task title for a direct command
+        auto& title = task.title;
+        auto& desc = task.description;
+        // If title IS the command (starts with g++, make, python, ./, bash, etc.)
+        std::regex cmd_re(R"(^(g\+\+\s.*|make\b.*|python3?\s+.*|\.\/\S.*|bash\s+.*|cmake\s.*|npm\s+.*|cargo\s+.*)$)");
+        std::smatch match;
+        if (std::regex_match(title, match, cmd_re)) {
+            bash_cmd = title;
+        } else if (std::regex_match(desc, match, cmd_re)) {
+            bash_cmd = desc;
+        } else {
+            // Search within title/desc for a command
+            std::regex search_re(R"(\b(g\+\+\s+[^\n]+|make\b|python3?\s+\S+|\.\/\S+|bash\s+\S+|cmake\s+[^\n]+))");
+            if (std::regex_search(title, match, search_re)) bash_cmd = match[1].str();
+            else if (std::regex_search(desc, match, search_re)) bash_cmd = match[1].str();
+            else if (std::regex_search(original_request_, match, search_re)) bash_cmd = match[1].str();
         }
-        // If no command found, try to construct one
-        if (bash_cmd.empty()) {
-            // Look for a compile/run command in the original request
-            std::regex compile_re(R"((\bg\+\+\s+[^\n]+|\bmake\b|\bcmake\s+[^\n]+|\bbash\s+\S+\.sh|\bpython3?\s+\S+))");
-            std::smatch req_match;
-            if (std::regex_search(original_request_, req_match, compile_re)) {
-                bash_cmd = req_match[1].str();
-            }
-        }
-        // If we have a .sh file mentioned, run it with bash
-        if (bash_cmd.empty() && !target_file.empty() &&
-            target_file.size() > 3 && target_file.substr(target_file.size()-3) == ".sh") {
-            bash_cmd = "bash " + target_file;
-        }
-        // If we have a compiled binary name, try running it
-        if (bash_cmd.empty() && !target_file.empty() && target_file.find('.') == std::string::npos) {
-            bash_cmd = "./" + target_file;
+        // Fallback: .sh file → bash it, no extension → run it
+        if (bash_cmd.empty() && !target_file.empty()) {
+            if (target_file.size() > 3 && target_file.substr(target_file.size()-3) == ".sh")
+                bash_cmd = "bash " + target_file;
+            else if (target_file.find('.') == std::string::npos)
+                bash_cmd = "./" + target_file;
         }
     }
 
-    log::debug("Classification: write=" + std::to_string(is_write) +
-               " read=" + std::to_string(is_read) +
-               " bash=" + std::to_string(is_bash) +
-               " file=" + target_file +
-               " cmd=" + bash_cmd);
+    log::debug("Task dispatch: type=" + task_type + " file=" + target_file + " cmd=" + bash_cmd);
 
     try {
-        if (is_bash && !bash_cmd.empty()) {
+        if (task_type == "bash" && !bash_cmd.empty()) {
             auto output = do_bash(bash_cmd);
             task.result = output;
             // Check if the command failed
@@ -598,7 +567,7 @@ bool Session::execute_task(Task& task, SessionCallbacks& cb) {
             return true;
         }
 
-        if (is_write && !target_file.empty()) {
+        if (task_type == "write" && !target_file.empty()) {
             auto code = do_write(target_file, task.description.empty() ? task.title : task.description);
             if (code.empty()) {
                 task.result = "Code generation returned empty";
@@ -609,7 +578,7 @@ bool Session::execute_task(Task& task, SessionCallbacks& cb) {
             return true;
         }
 
-        if (is_read && !target_file.empty()) {
+        if (task_type == "read" && !target_file.empty()) {
             auto content = do_read(target_file);
             task.result = content.empty() ? "File not found" : "Read " + target_file;
             if (cb.on_stream) cb.on_stream(content);

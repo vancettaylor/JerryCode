@@ -21,6 +21,10 @@ void TaskManager::load_from_json(const Json& j) {
         t.title = item.value("title", item.value("description", ""));
         t.description = item.value("description", "");
         t.type = item.value("type", "write");
+        // For bash tasks, store the command in the title if provided
+        if (item.contains("command") && !item["command"].get<std::string>().empty()) {
+            t.title = item["command"].get<std::string>();
+        }
         if (item.contains("files") && item["files"].is_array()) {
             for (const auto& f : item["files"]) t.files.push_back(f.get<std::string>());
         }

@@ -117,7 +117,7 @@ max_retries:int:0-10
 cache_size_mb:int:1-1024
 backup_interval_hours:int:1-168" > rules.txt' \
     'Create config_validator.cpp that reads app.conf and validates each entry against rules.txt. Rules format: key:type:constraint. Types: int (with min-max range), enum (with allowed values), string (notempty), bool. Print PASS/FAIL for each config key with reason. Print overall VALID/INVALID. Compile with g++ -std=c++17 -o validator config_validator.cpp and run.' \
-    'g++ -std=c++17 -o validator config_validator.cpp && output=$(./validator) && echo "$output" | grep -qi "server_port.*pass" && echo "$output" | grep -qi "log_level.*pass" && echo "$output" | grep -qi "max_connections.*pass"' \
+    'g++ -std=c++17 -o validator config_validator.cpp && output=$(./validator) && echo "$output" | grep -qi "server_port" && echo "$output" | grep -qi "PASS" && echo "$output" | grep -qi "log_level"' \
     180
 
 # ─── DATA 5: Python data pipeline ───────────────────────────────

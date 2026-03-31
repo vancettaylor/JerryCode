@@ -17,16 +17,23 @@ std::string PromptEngine::task_breakdown(const std::string& project_context) {
 
 You MUST respond with ONLY a JSON array. No other text. Start with [ and end with ].
 Format:
-[{"title":"short title","description":"what to do","files":["files involved"]}]
+[{"title":"short title","description":"what to do","type":"read|write|bash","files":["files"],"command":"shell command for bash tasks"}]
 
 Rules:
-- Each task should be ONE concrete action (read a file, write a file, run a command).
+- type is REQUIRED: "read" to examine a file, "write" to create/modify, "bash" to run a command.
+- For bash tasks, the "command" field must contain the EXACT shell command to run.
+- For write tasks, "files" should list the file to create/modify.
 - Read existing files before modifying them.
-- After writing code, include a compile/test task.
-- Keep it minimal — don't add unnecessary steps.
-- Order matters: dependencies come first.
-- Use @read(file) to examine files BEFORE planning if you need to understand the project.
-  Emit the tag and STOP. The system will show you the file, then you continue planning.)";
+- After writing code, include a compile/test bash task with the full compile command.
+- Keep it minimal. Order matters: dependencies first.
+
+Example:
+[
+  {"title":"Read main.cpp","type":"read","files":["main.cpp"]},
+  {"title":"Add greet function","type":"write","description":"Add greet() and call from main","files":["main.cpp"]},
+  {"title":"Compile","type":"bash","command":"g++ -std=c++17 -o test main.cpp"},
+  {"title":"Run","type":"bash","command":"./test"}
+])";
 }
 
 std::string PromptEngine::action_prompt(
@@ -65,6 +72,9 @@ RULES:
 - For Makefiles: compile .cpp files only, never .hpp.
 - Strings with special chars: use proper escaping or raw string literals.
 - If you need to see another file, use @read(id) and STOP.
+- Do NOT redefine functions/classes already defined in included headers.
+- If a reference file defines a constructor or method, do NOT redefine it in your output.
+- Use the reference files to understand interfaces, then USE them — don't duplicate them.
 )";
 
     prompt += "\n## File: " + file_path;
