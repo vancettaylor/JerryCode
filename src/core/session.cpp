@@ -544,6 +544,11 @@ void Session::phase_execute(SessionCallbacks& cb) {
         if (success) {
             tasks_.update_status(task_number, "done", task.result);
             action_log_.push_back("OK #" + task.number + " " + task.title);
+            // Auto-notebook: record task completion in notes for context continuity
+            notebook_.add("Completed " + task.number + " " + task.title +
+                         (task.result.size() > 100 ? ": " + task.result.substr(0, 100) + "..." :
+                          task.result.empty() ? "" : ": " + task.result),
+                         "task " + task.number);
         } else {
             int attempts = task.attempts + 1;
             if (attempts >= task.max_attempts) {
@@ -756,28 +761,60 @@ std::string Session::do_write(const std::string& path, const std::string& descri
         system += "\nNew file. Output the complete content.\n";
     }
 
+    // Include session notes if available (accumulated knowledge from prior tasks)
+    if (notebook_.count() > 0) {
+        system += "\n## Session Notes (what you've learned so far):\n";
+        system += notebook_.render_compact() + "\n";
+    }
+
     log::info("Generating code for " + path);
     round_counter_++;
 
     std::string code;
     auto file_count = expander_.stats().total_items;
 
-    if (file_count <= 8) {
-        // Small project: dump all references, single call
-        for (const auto& [p, c] : file_cache_) {
-            if (p == path || c.empty()) continue;
+    // Only include references relevant to this task type (conditional tool inclusion)
+    // Don't dump ALL cached files — only those the task actually needs
+    for (const auto& [p, c] : file_cache_) {
+        if (p == path || c.empty()) continue;
+        // For small projects include all, for large only include files mentioned in task
+        if (file_count <= 8 || description.find(p) != std::string::npos ||
+            original_request_.find(p) != std::string::npos) {
             system += "\n## Reference: " + p + "\n" + c + "\n";
         }
+    }
+
+    if (file_count <= 8) {
         code = llm_call(system, "Generate the complete file content.", 8192);
     } else {
-        // Large project: use expansion loop — model @reads what it needs
-        // The working set has all project files available to @read
         code = llm_with_expansion(system,
             "Generate the complete file content for " + path + ". "
-            "Use @read(file) to load any reference files you need. "
-            "Use @hide(file) when you're done with a reference file to free context. "
-            "When ready, output ONLY the raw code with no action tags.",
+            "Use @read(file) to load reference files. @hide(file) when done. "
+            "When ready, output ONLY the raw code.",
             8192, 6);
+    }
+
+    // Truncation detection: if code ends mid-line or mid-brace, it was cut off
+    if (!code.empty()) {
+        int open_braces = 0;
+        for (char c : code) {
+            if (c == '{') open_braces++;
+            else if (c == '}') open_braces--;
+        }
+        if (open_braces > 1) {
+            log::warn("Truncation detected: " + std::to_string(open_braces) +
+                      " unclosed braces. Retrying with continuation prompt.");
+            auto continuation = system + "\n## Partial output (continue from here):\n" +
+                               code.substr(code.size() > 2000 ? code.size() - 2000 : 0) +
+                               "\n\nContinue generating the rest of this file. "
+                               "Start EXACTLY where the above code left off.";
+            auto more = llm_call(continuation, "Continue the code.", 4096);
+            more = strip_fences(more);
+            if (!more.empty()) {
+                code += "\n" + more;
+                log::info("Continuation added " + std::to_string(more.size()) + " bytes");
+            }
+        }
     }
     code = strip_fences(code);
 
@@ -883,6 +920,22 @@ bool Session::try_fix_error(const std::string& error_output, SessionCallbacks& c
         fixed = strip_fences(fixed);
 
         if (fixed.empty()) return false;
+
+        // Sanity check: the fix should be similar size to the original
+        // If the fix is less than 20% the size of the original, it's likely mangled
+        if (current.size() > 100 && fixed.size() < current.size() / 5) {
+            log::warn("Fix rejected: output (" + std::to_string(fixed.size()) +
+                      "B) is too small compared to original (" +
+                      std::to_string(current.size()) + "B). Keeping original.");
+            return false;
+        }
+
+        // Sanity check: reject if it looks like an error message, not code
+        if (fixed.find("API Error") == 0 || fixed.find("<!DOCTYPE") != std::string::npos ||
+            fixed.find("The error") == 0 || fixed.find("Looking at") == 0) {
+            log::warn("Fix rejected: output looks like explanation, not code.");
+            return false;
+        }
 
         // Write the fix
         auto full_path = abs_path(target_file);
