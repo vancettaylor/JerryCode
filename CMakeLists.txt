@@ -125,6 +125,10 @@ target_link_libraries(jerrycode PRIVATE cortex_lib)
 add_executable(cortex_test_harness src/test_harness.cpp)
 target_link_libraries(cortex_test_harness PRIVATE cortex_lib)
 
+# ─── API test ──────────────────────────────────────────────────
+add_executable(test_api tests/test_api.cpp)
+target_link_libraries(test_api PRIVATE cortex_lib)
+
 # ─── Tests ──────────────────────────────────────────────────────
 option(CORTEX_BUILD_TESTS "Build tests" ON)
 if(CORTEX_BUILD_TESTS)
