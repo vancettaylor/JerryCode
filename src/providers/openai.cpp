@@ -58,7 +58,7 @@ CompletionResult OpenAiProvider::complete(
     log::debug("OpenAI complete request to " + base_url + "/v1/chat/completions");
     log::debug("Model: " + config.model);
 
-    auto res = cli.Post("/v1/chat/completions", body.dump(), "application/json");
+    auto res = cli.Post("/v1/chat/completions", body.dump(-1, ' ', false, Json::error_handler_t::replace), "application/json");
 
     CompletionResult result;
     if (!res) {
@@ -147,7 +147,7 @@ CompletionResult OpenAiProvider::stream(
     });
 
     // Post request — httplib accumulates the full response
-    auto res = cli.Post("/v1/chat/completions", body.dump(), "application/json");
+    auto res = cli.Post("/v1/chat/completions", body.dump(-1, ' ', false, Json::error_handler_t::replace), "application/json");
 
     if (!res) {
         std::string err = "Connection failed to " + base_url;

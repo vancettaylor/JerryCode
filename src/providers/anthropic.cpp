@@ -65,7 +65,7 @@ CompletionResult AnthropicProvider::complete(
         {"content-type", "application/json"}
     };
 
-    auto res = cli.Post("/v1/messages", headers, body.dump(), "application/json");
+    auto res = cli.Post("/v1/messages", headers, body.dump(-1, ' ', false, Json::error_handler_t::replace), "application/json");
 
     CompletionResult result;
     if (!res || res->status != 200) {
@@ -140,7 +140,7 @@ CompletionResult AnthropicProvider::stream(
     // For streaming, we do a regular Post and parse SSE from the full response.
     // True incremental streaming would require a lower-level socket approach.
     // This is sufficient for the initial implementation.
-    auto res = cli.Post("/v1/messages", headers, body.dump(), "application/json");
+    auto res = cli.Post("/v1/messages", headers, body.dump(-1, ' ', false, Json::error_handler_t::replace), "application/json");
 
     if (!res || (res->status != 200 && res->status != 0)) {
         std::string err = res ? res->body : "Connection failed";
