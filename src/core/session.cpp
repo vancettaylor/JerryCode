@@ -337,7 +337,16 @@ void Session::phase_breakdown(const std::string& request) {
     }
     project_ctx << expander_.compile().index_block;
 
-    auto system = PromptEngine::task_breakdown(project_ctx.str());
+    // Use template store for decomposition if available, fall back to PromptEngine
+    std::string system;
+    if (templates_.has("decomposition.system")) {
+        system = templates_.get("decomposition.system");
+        if (!project_ctx.str().empty()) {
+            system += "\n\n## Project Context\n" + project_ctx.str();
+        }
+    } else {
+        system = PromptEngine::task_breakdown(project_ctx.str());
+    }
 
     log::info("Phase 1: Breaking down task...");
 
@@ -603,6 +612,23 @@ bool Session::execute_task(Task& task, SessionCallbacks& cb) {
             return !content.empty();
         }
 
+        if (task_type == "research") {
+            auto desc = task.description.empty() ? task.title : task.description;
+            // Assemble research prompt from blocks + metadata
+            std::unordered_map<std::string, std::string> vars = {
+                {"topic", desc}, {"goal", original_request_}
+            };
+            auto system = templates_.assemble("research", vars);
+            if (system.empty()) system = "Extract key findings about the following topic.";
+            // Add the specific research prompt template
+            system += "\n\n" + templates_.render("research_prompt", vars);
+            auto response = llm_call(system, desc, 2048);
+            notebook_.add(response.substr(0, 1000), "research: " + task.title);
+            task.result = "Research complete, " + std::to_string(response.size()) + " bytes of findings recorded";
+            if (cb.on_stream) cb.on_stream(response);
+            return true;
+        }
+
         // Fallback: if we have a bash command candidate, try it
         if (!bash_cmd.empty()) {
             auto output = do_bash(bash_cmd);
@@ -640,36 +666,52 @@ std::string Session::do_read(const std::string& path) {
 }
 
 std::string Session::do_write(const std::string& path, const std::string& description) {
-    // Read existing file if it exists
     auto existing = read_file(path);
 
-    // Build code gen prompt
-    auto system = PromptEngine::code_gen(path, description, original_request_);
+    // Determine output format from file extension
+    auto dot = path.rfind('.');
+    auto ext = dot != std::string::npos ? path.substr(dot + 1) : "";
+    std::string output_format = "prose"; // default
 
-    if (!existing.empty()) {
-        // Detect if this is a bug fix task
-        auto desc_lower = description;
-        std::transform(desc_lower.begin(), desc_lower.end(), desc_lower.begin(), ::tolower);
-        bool is_fix = desc_lower.find("fix") != std::string::npos ||
-                      desc_lower.find("bug") != std::string::npos ||
-                      desc_lower.find("error") != std::string::npos;
-
-        system += "\n## Current content:\n" + existing + "\n";
-        if (is_fix) {
-            system += "\nIMPORTANT: This is a BUG FIX task. The code above has a bug. ";
-            system += "You MUST find and fix the bug. Do NOT copy the code unchanged. ";
-            system += "If there are comments indicating the bug (like '// BUG:'), apply the fix they describe. ";
-            system += "Output the COMPLETE corrected file.\n";
-        } else {
-            system += "\nYou MUST modify the above file according to the task. ";
-            system += "Apply ALL changes described. Do NOT return the file unchanged. ";
-            system += "Output the COMPLETE updated file.\n";
-        }
-    } else {
-        system += "\nNew file. Output the complete content.\n";
+    // Code extensions
+    if (ext == "cpp" || ext == "hpp" || ext == "h" || ext == "c" ||
+        ext == "py" || ext == "js" || ext == "ts" || ext == "rs" ||
+        ext == "go" || ext == "java" || ext == "rb" || ext == "cs" ||
+        ext == "sh") {
+        output_format = "code";
     }
 
-    log::info("Generating code for " + path);
+    // Detect fix vs modify vs new
+    auto desc_lower = description;
+    std::transform(desc_lower.begin(), desc_lower.end(), desc_lower.begin(), ::tolower);
+    bool is_fix = desc_lower.find("fix") != std::string::npos ||
+                  desc_lower.find("bug") != std::string::npos;
+
+    if (is_fix && !existing.empty()) output_format = "fix";
+    else if (!existing.empty() && output_format == "code") output_format = "modify";
+
+    // Assemble prompt from blocks based on output_format + metadata
+    std::unordered_map<std::string, std::string> vars = {
+        {"topic", description},
+        {"goal", original_request_},
+        {"file", path}
+    };
+
+    std::string system = templates_.assemble(output_format, vars);
+    if (system.empty()) {
+        // Fallback if templates not loaded
+        system = PromptEngine::code_gen(path, description, original_request_);
+    }
+
+    system += "\n\n## File: " + path;
+    system += "\n## Task: " + description;
+    system += "\n## Original Request: " + original_request_ + "\n";
+
+    if (!existing.empty()) {
+        system += "\n## Current content:\n" + existing + "\n";
+    }
+
+    log::info("Generating [" + output_format + "] for " + path);
     round_counter_++;
 
     std::string code;

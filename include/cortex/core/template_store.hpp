@@ -48,6 +48,12 @@ public:
     static std::string substitute(const std::string& tmpl,
                                    const std::unordered_map<std::string, std::string>& vars);
 
+    /// Assemble a prompt from the assembly rules for a given output_format.
+    /// Reads the "assembly.{format}" array, resolves each block reference,
+    /// joins them with newlines, and substitutes variables.
+    std::string assemble(const std::string& format,
+                         const std::unordered_map<std::string, std::string>& vars) const;
+
     /// Check if a template path exists.
     bool has(const std::string& path) const;
 

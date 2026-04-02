@@ -89,9 +89,34 @@ bool TemplateStore::has(const std::string& path) const {
 }
 
 std::string TemplateStore::get_reminder(int round_number) const {
-    auto reminders = get_array("context_reminders");
+    auto reminders = get_array("reminders");
     if (reminders.empty()) return "";
     return reminders[round_number % reminders.size()];
+}
+
+std::string TemplateStore::assemble(const std::string& format,
+                                     const std::unordered_map<std::string, std::string>& vars) const {
+    // Read the assembly rule: "assembly.{format}" → array of block references
+    auto block_refs = get_array("assembly." + format);
+    if (block_refs.empty()) {
+        log::warn("No assembly rule for format: " + format);
+        return get("blocks.identity");
+    }
+
+    // Resolve each block reference and join
+    std::string result;
+    for (const auto& ref : block_refs) {
+        auto block = get(ref);
+        if (!block.empty()) {
+            if (!result.empty()) result += "\n";
+            result += block;
+        }
+    }
+
+    // Substitute variables ({{topic}}, {{goal}}, etc.)
+    result = substitute(result, vars);
+
+    return result;
 }
 
 } // namespace cortex
