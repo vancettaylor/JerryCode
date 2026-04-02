@@ -171,10 +171,12 @@ void TuiApp::submit_input() {
 // ─── UI Building ──────────────────────────────────────────────
 
 ftxui::Component TuiApp::build_ui() {
+    // Create input as a member so it outlives this function
     auto input_option = InputOption::Default();
-    auto input = Input(&input_text_, "Type a task...", input_option);
+    input_component_ = Input(&input_text_, "Type a task...", input_option);
 
-    auto input_wrapped = CatchEvent(input, [this](Event event) -> bool {
+    // Wrap with Enter key handling
+    input_component_ = CatchEvent(input_component_, [this](Event event) -> bool {
         if (event == Event::Return) {
             submit_input();
             return true;
@@ -182,7 +184,8 @@ ftxui::Component TuiApp::build_ui() {
         return false;
     });
 
-    auto renderer = Renderer(input_wrapped, [this, &input_wrapped] {
+    // Use 'this' pointer to access input_component_ safely (no dangling ref)
+    auto renderer = Renderer(input_component_, [this] {
         process_events();
 
         // ─── Status Bar ────────────────────────────────
@@ -201,19 +204,22 @@ ftxui::Component TuiApp::build_ui() {
 
         // ─── Chat Panel ────────────────────────────────
         Elements chat_elems;
+        if (messages_.empty()) {
+            chat_elems.push_back(text("") | flex);
+        }
         for (const auto& msg : messages_) {
             Color c = Color::White;
             std::string prefix;
-            if (msg.role == "user")   { c = Color::Cyan;      prefix = " > "; }
+            if (msg.role == "user")        { c = Color::Cyan;      prefix = " > "; }
             else if (msg.role == "step")   { c = Color::Yellow;    prefix = " * "; }
             else if (msg.role == "code")   { c = Color::Green;     prefix = "   "; }
             else if (msg.role == "ok")     { c = Color::Green;     prefix = " + "; }
             else if (msg.role == "error")  { c = Color::Red;       prefix = " ! "; }
-            else if (msg.role == "status") { c = Color::GrayLight;  prefix = " - "; }
+            else if (msg.role == "status") { c = Color::GrayLight; prefix = " - "; }
             else if (msg.role == "stats")  { c = Color::Magenta;   prefix = "   "; }
 
             auto content = msg.content;
-            if (content.size() > 500) content = content.substr(0, 500) + "...";
+            if (content.size() > 2000) content = content.substr(0, 2000) + "\n...(truncated)";
             chat_elems.push_back(paragraph(prefix + content) | color(c));
         }
 
@@ -221,9 +227,11 @@ ftxui::Component TuiApp::build_ui() {
 
         // ─── Sidebar ──────────────────────────────────
         Elements sidebar_elems;
+        sidebar_elems.push_back(text("JerryCode") | bold | color(Color::Cyan));
+        sidebar_elems.push_back(separator());
+
         if (!task_list_text_.empty()) {
             sidebar_elems.push_back(text("Tasks") | bold | color(Color::Yellow));
-            sidebar_elems.push_back(separator());
             std::istringstream ss(task_list_text_);
             std::string line;
             while (std::getline(ss, line)) {
@@ -234,26 +242,31 @@ ftxui::Component TuiApp::build_ui() {
                 sidebar_elems.push_back(text(line) | color(tc));
             }
             sidebar_elems.push_back(text(""));
+        } else {
+            sidebar_elems.push_back(text("No tasks yet") | dim);
         }
+
         if (!stats_text_.empty()) {
-            sidebar_elems.push_back(text("Stats") | bold | color(Color::Magenta));
             sidebar_elems.push_back(separator());
+            sidebar_elems.push_back(text("Stats") | bold | color(Color::Magenta));
             std::istringstream ss(stats_text_);
             std::string line;
             while (std::getline(ss, line)) {
-                sidebar_elems.push_back(text(line) | color(Color::GrayLight));
+                sidebar_elems.push_back(text(line) | dim);
             }
         }
-        if (sidebar_elems.empty()) {
-            sidebar_elems.push_back(text("No tasks yet") | color(Color::GrayDark));
-        }
-        auto sidebar = vbox(sidebar_elems) | yframe | size(WIDTH, EQUAL, 32);
+
+        sidebar_elems.push_back(filler());
+        sidebar_elems.push_back(separator());
+        sidebar_elems.push_back(text("/sidebar /clear /quit") | dim);
+
+        auto sidebar = vbox(sidebar_elems) | size(WIDTH, EQUAL, 30) | border;
 
         // ─── Input Area ────────────────────────────────
         auto input_box = hbox({
             text(session_running_ ? " * " : " > ") |
                 color(session_running_ ? Color::Yellow : Color::Cyan),
-            input_wrapped->Render() | flex,
+            input_component_->Render() | flex,
         }) | border;
 
         // ─── Compose ──────────────────────────────────
@@ -264,7 +277,13 @@ ftxui::Component TuiApp::build_ui() {
             main_area = chat_panel | flex;
         }
 
-        return vbox({ status_bar, separator(), main_area | flex, separator(), input_box });
+        return vbox({
+            status_bar,
+            separator(),
+            main_area | flex,
+            separator(),
+            input_box,
+        });
     });
 
     return renderer;

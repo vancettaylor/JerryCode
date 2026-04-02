@@ -86,6 +86,7 @@ private:
 
     // ─── UI state ──────────────────────────────────────────
     ftxui::ScreenInteractive screen_;
+    ftxui::Component input_component_;      ///< Input field component (must outlive renderer)
     std::vector<ChatMessage> messages_;     ///< Chat history
     std::string input_text_;                ///< Current input buffer
     std::string current_phase_ = "idle";    ///< Current session phase
