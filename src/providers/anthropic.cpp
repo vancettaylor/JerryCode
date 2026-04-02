@@ -1,6 +1,7 @@
 #include "cortex/providers/anthropic.hpp"
 #include "cortex/providers/sse_parser.hpp"
 #include "cortex/util/log.hpp"
+#include "cortex/util/json_util.hpp"
 #include <httplib.h>
 
 namespace cortex {
@@ -75,7 +76,7 @@ CompletionResult AnthropicProvider::complete(
         return result;
     }
 
-    auto json = Json::parse(res->body);
+    auto json_opt = safe_json_parse(res->body); if (!json_opt) { result.content.push_back({.type = "text", .text = "JSON parse error"}); result.stop_reason = "error"; return result; } auto json = *json_opt;
     for (const auto& block : json["content"]) {
         if (block["type"] == "text") {
             result.content.push_back({.type = "text", .text = block["text"]});
@@ -114,7 +115,7 @@ CompletionResult AnthropicProvider::stream(
 
     SseParser parser([&](const SseEvent& event) {
         if (event.event == "content_block_delta") {
-            auto data = Json::parse(event.data);
+            auto data_opt = safe_json_parse(event.data); if (!data_opt) return; auto data = *data_opt;
             if (data.contains("delta") && data["delta"].contains("text")) {
                 auto text = data["delta"]["text"].get<std::string>();
                 accumulated_text += text;
@@ -123,13 +124,13 @@ CompletionResult AnthropicProvider::stream(
         } else if (event.event == "message_stop") {
             // Done
         } else if (event.event == "message_delta") {
-            auto data = Json::parse(event.data);
+            auto data_opt = safe_json_parse(event.data); if (!data_opt) return; auto data = *data_opt;
             if (data.contains("usage")) {
                 result.usage.output_tokens = data["usage"].value("output_tokens", 0);
             }
             result.stop_reason = data.value("stop_reason", "end_turn");
         } else if (event.event == "message_start") {
-            auto data = Json::parse(event.data);
+            auto data_opt = safe_json_parse(event.data); if (!data_opt) return; auto data = *data_opt;
             if (data.contains("message") && data["message"].contains("usage")) {
                 result.usage.input_tokens = data["message"]["usage"].value("input_tokens", 0);
             }

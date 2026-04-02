@@ -1,4 +1,5 @@
 #include "cortex/core/orchestrator.hpp"
+#include "cortex/util/json_util.hpp"
 #include "cortex/core/context_expander.hpp"
 #include "cortex/util/uuid.hpp"
 #include "cortex/util/log.hpp"
@@ -429,7 +430,7 @@ User: "Create a config parser in config.hpp and use it in main.cpp"
 
     std::vector<TaskStep> steps;
     try {
-        auto json = Json::parse(response.substr(arr_start, arr_end - arr_start + 1));
+        auto json_opt = safe_json_parse(response.substr(arr_start, arr_end - arr_start + 1)); if (!json_opt) { log::error("Invalid JSON in orchestrator"); return {}; } auto json = *json_opt;
         for (const auto& j : json) {
             TaskStep step;
             step.id = generate_uuid();

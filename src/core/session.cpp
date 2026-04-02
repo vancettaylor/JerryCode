@@ -18,6 +18,7 @@
  * - Error recovery: meta-agent analyzes errors, targets correct file
  */
 #include "cortex/core/session.hpp"
+#include "cortex/util/json_util.hpp"
 #include "cortex/util/uuid.hpp"
 #include "cortex/util/log.hpp"
 #include <filesystem>
@@ -390,7 +391,7 @@ void Session::phase_breakdown(const std::string& request) {
                 if (text[pos-1] == '}') {
                     auto candidate = "[" + text.substr(0, pos) + "]";
                     try {
-                        auto test = Json::parse(candidate);
+                        auto test_opt = safe_json_parse(candidate); if (!test_opt) continue; auto test = *test_opt;
                         if (test.is_array() && !test.empty()) {
                             json_str = candidate;
                             parsed = true;
@@ -411,7 +412,11 @@ void Session::phase_breakdown(const std::string& request) {
     }
 
     try {
-        auto json = Json::parse(json_str);
+        auto json = Json::parse(json_str, nullptr, false);
+        if (json.is_discarded()) {
+            log::error("Invalid JSON in task breakdown");
+            return;
+        }
         tasks_.load_from_json(json);
         log::info("Task breakdown: " + std::to_string(tasks_.total_count()) + " tasks");
         for (const auto& t : tasks_.tasks()) {
@@ -753,7 +758,7 @@ bool Session::try_fix_error(const std::string& error_output, SessionCallbacks& c
     if (json_start == std::string::npos) return false;
 
     try {
-        auto analysis = Json::parse(response.substr(json_start, json_end - json_start + 1));
+        auto analysis_opt = safe_json_parse(response.substr(json_start, json_end - json_start + 1)); if (!analysis_opt) return false; auto analysis = *analysis_opt;
         auto target_file = analysis.value("file", "");
         auto fix_desc = analysis.value("fix_description", "");
 
@@ -818,7 +823,7 @@ void Session::review_progress(SessionCallbacks& cb) {
     if (json_start == std::string::npos) return;
 
     try {
-        auto review = Json::parse(response.substr(json_start, json_end - json_start + 1));
+        auto review_opt = safe_json_parse(response.substr(json_start, json_end - json_start + 1)); if (!review_opt) return; auto review = *review_opt;
 
         if (review.contains("should_retry_failed") && review["should_retry_failed"].is_array()) {
             for (const auto& id : review["should_retry_failed"]) {
