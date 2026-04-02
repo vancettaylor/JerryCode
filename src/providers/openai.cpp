@@ -5,6 +5,31 @@
 
 namespace cortex {
 
+// Sanitize invalid UTF-8 bytes that can crash nlohmann/json
+static std::string sanitize_utf8(const std::string& input) {
+    std::string output;
+    output.reserve(input.size());
+    for (size_t i = 0; i < input.size(); ) {
+        unsigned char c = input[i];
+        if (c < 0x80) {
+            output += c; i++;
+        } else if ((c & 0xE0) == 0xC0 && i + 1 < input.size() &&
+                   (input[i+1] & 0xC0) == 0x80) {
+            output += input[i]; output += input[i+1]; i += 2;
+        } else if ((c & 0xF0) == 0xE0 && i + 2 < input.size() &&
+                   (input[i+1] & 0xC0) == 0x80 && (input[i+2] & 0xC0) == 0x80) {
+            output += input[i]; output += input[i+1]; output += input[i+2]; i += 3;
+        } else if ((c & 0xF8) == 0xF0 && i + 3 < input.size() &&
+                   (input[i+1] & 0xC0) == 0x80 && (input[i+2] & 0xC0) == 0x80 &&
+                   (input[i+3] & 0xC0) == 0x80) {
+            output += input[i]; output += input[i+1]; output += input[i+2]; output += input[i+3]; i += 4;
+        } else {
+            output += '?'; i++;  // Replace invalid byte
+        }
+    }
+    return output;
+}
+
 Json OpenAiProvider::build_request_body(const std::vector<Message>& messages,
                                          const ProviderConfig& config,
                                          bool streaming) const {
@@ -75,7 +100,7 @@ CompletionResult OpenAiProvider::complete(
         return result;
     }
 
-    auto json = Json::parse(res->body);
+    auto json = Json::parse(sanitize_utf8(res->body));
 
     if (json.contains("choices") && !json["choices"].empty()) {
         auto& choice = json["choices"][0];
@@ -119,7 +144,7 @@ CompletionResult OpenAiProvider::stream(
         if (event.data == "[DONE]") return;
 
         try {
-            auto data = Json::parse(event.data);
+            auto data = Json::parse(sanitize_utf8(event.data));
             if (data.contains("choices") && !data["choices"].empty()) {
                 auto& choice = data["choices"][0];
                 if (choice.contains("delta") && choice["delta"].contains("content")) {
