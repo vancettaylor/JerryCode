@@ -62,8 +62,12 @@ void TuiApp::process_events() {
             messages_.push_back({"step", ev.text});
             break;
         case TuiEvent::Stream:
+            // Accumulate stream into current code block, but cap size
             if (!messages_.empty() && messages_.back().role == "code") {
-                messages_.back().content += ev.text;
+                if (messages_.back().content.size() < 3000) {
+                    messages_.back().content += ev.text;
+                }
+                // Silently drop excess — it's in the file on disk
             } else {
                 messages_.push_back({"code", ev.text});
             }
@@ -85,11 +89,13 @@ void TuiApp::process_events() {
             stats_text_ = ev.text;
             break;
         case TuiEvent::Done:
-            current_phase_ = "idle";
+            current_phase_ = "done";
             session_running_ = false;
-            if (!ev.text.empty()) {
-                messages_.push_back({"stats", ev.text});
+            messages_.push_back({"ok", "Task complete."});
+            if (!stats_text_.empty()) {
+                messages_.push_back({"stats", stats_text_});
             }
+            current_phase_ = "idle";
             break;
         }
         event_queue_.pop();

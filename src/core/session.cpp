@@ -436,7 +436,8 @@ void Session::phase_execute(SessionCallbacks& cb) {
 
         if (cb.on_phase) cb.on_phase("task " + task.number + "/" +
                                       std::to_string(tasks_.total_count()) + ": " + task.title);
-        if (cb.on_status) cb.on_status(tasks_.render_compact());
+        // Send full task list so TUI sidebar shows checkmarks
+        if (cb.on_status) cb.on_status(tasks_.render());
 
         log::info("Executing task #" + task.number + ": " + task.title +
                   " (attempt " + std::to_string(task.attempts + 1) + ")");
@@ -447,16 +448,20 @@ void Session::phase_execute(SessionCallbacks& cb) {
         if (success) {
             tasks_.update_status(task_number, "done", task.result);
             action_log_.push_back("OK #" + task.number + " " + task.title);
+            // Update task list in TUI after each completion
+            if (cb.on_status) cb.on_status(tasks_.render());
         } else {
             int attempts = task.attempts + 1;
             if (attempts >= task.max_attempts) {
                 tasks_.update_status(task_number, "failed", task.result);
                 action_log_.push_back("FAIL #" + task.number + " " + task.title);
+                if (cb.on_status) cb.on_status(tasks_.render());
                 log::warn("Task #" + task.number + " failed after " +
                           std::to_string(attempts) + " attempts");
             } else {
                 tasks_.update_status(task_number, "failed", task.result);
                 action_log_.push_back("FAIL " + task.number + " " + task.title);
+                if (cb.on_status) cb.on_status(tasks_.render());
             }
         }
 
