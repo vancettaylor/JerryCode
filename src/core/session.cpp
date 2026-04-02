@@ -289,19 +289,27 @@ void Session::run(const std::string& user_request, SessionCallbacks cb) {
 
     log::info("=== Session start: " + user_request.substr(0, 80) + " ===");
 
-    // Phase 1: Break down the request
-    if (cb.on_phase) cb.on_phase("breaking down task");
-    phase_breakdown(user_request);
+    try {
+        // Phase 1: Break down the request
+        if (cb.on_phase) cb.on_phase("breaking down task");
+        phase_breakdown(user_request);
 
-    if (tasks_.total_count() == 0) {
-        if (cb.on_error) cb.on_error("Failed to break down task");
-        return;
+        if (tasks_.total_count() == 0) {
+            if (cb.on_error) cb.on_error("Failed to break down task");
+            return;
+        }
+
+        if (cb.on_status) cb.on_status(tasks_.render());
+
+        // Phase 2: Execute tasks
+        phase_execute(cb);
+    } catch (const std::exception& e) {
+        log::error("Session error: " + std::string(e.what()));
+        if (cb.on_error) cb.on_error(std::string("Error: ") + e.what());
+    } catch (...) {
+        log::error("Session unknown error");
+        if (cb.on_error) cb.on_error("Unknown error occurred");
     }
-
-    if (cb.on_status) cb.on_status(tasks_.render());
-
-    // Phase 2: Execute tasks
-    phase_execute(cb);
 
     // Final stats
     auto end = std::chrono::steady_clock::now();

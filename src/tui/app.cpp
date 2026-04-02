@@ -168,9 +168,17 @@ void TuiApp::submit_input() {
             }
         };
 
-        session.run(request, cb);
-        post(TuiEvent::Stats, session.stats_summary());
-        post(TuiEvent::Done, "");
+        try {
+            session.run(request, cb);
+            post(TuiEvent::Stats, session.stats_summary());
+            post(TuiEvent::Done, "");
+        } catch (const std::exception& e) {
+            post(TuiEvent::Error, std::string("Session crashed: ") + e.what());
+            post(TuiEvent::Done, "");
+        } catch (...) {
+            post(TuiEvent::Error, "Session crashed with unknown error");
+            post(TuiEvent::Done, "");
+        }
     });
 }
 
